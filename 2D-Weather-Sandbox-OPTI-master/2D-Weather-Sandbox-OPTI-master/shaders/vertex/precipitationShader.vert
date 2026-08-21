@@ -46,6 +46,7 @@ uniform float growthRate_30C;     // 0.01
 uniform float freezingRate;       // 0.0002
 uniform float meltingRate;        // 0.0015
 uniform float evapRate;           // 0.0005
+uniform float lightningEnabled;   // 1.0 = allow new lightning strikes to spawn, 0.0 = disabled
 
 #include "common.glsl"
 
@@ -129,7 +130,8 @@ void main()
 
           const float minIterationsSinceLastLightningBolt = 30.; // 50.
 
-          if (lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt &&
+          if (lightningEnabled > 0.5 &&
+              lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt &&
               random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) { // Spawn lightning
             lightningSpawned = true;
             isActive = false;

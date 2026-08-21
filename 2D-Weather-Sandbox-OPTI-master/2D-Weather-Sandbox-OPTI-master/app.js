@@ -393,6 +393,7 @@ const guiControls_default = {
   showGraph : false,
   realDewPoint : false, // show real dew point in graph, instead of dew point with cloud water included
   enablePrecipitation : true,
+  lightningEnabled : true,
   showDrops : false,
   paused : false,
   IterPerFrame : 10,
@@ -3443,6 +3444,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'freezingRate'), guiControls.freezingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingRate'), guiControls.meltingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapRate'), guiControls.evapRate);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningEnabled'), guiControls.lightningEnabled ? 1.0 : 0.0);
     gl.useProgram(postProcessingProgram);
     gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
   }
@@ -3869,6 +3871,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         guiControls.inactiveDroplets = NUM_DROPLETS;
       })
       .name('Enable Precipitation');
+
+    advanced_folder.add(guiControls, 'lightningEnabled')
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningEnabled'), guiControls.lightningEnabled ? 1.0 : 0.0);
+      })
+      .name('Activer la foudre');
 
     advanced_folder.add(guiControls, 'IterPerFrame', 1, 50, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations / Frame').listen();
 
