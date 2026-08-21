@@ -3767,6 +3767,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).listen().name('Inactive Droplets');
 
+    precipitation_folder.add(guiControls, 'lightningEnabled')
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningEnabled'), guiControls.lightningEnabled ? 1.0 : 0.0);
+      })
+      .name('Activer la foudre');
+
 
     var display_folder = datGui.addFolder('Display');
 
@@ -3871,13 +3878,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         guiControls.inactiveDroplets = NUM_DROPLETS;
       })
       .name('Enable Precipitation');
-
-    advanced_folder.add(guiControls, 'lightningEnabled')
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningEnabled'), guiControls.lightningEnabled ? 1.0 : 0.0);
-      })
-      .name('Activer la foudre');
 
     advanced_folder.add(guiControls, 'IterPerFrame', 1, 50, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations / Frame').listen();
 
