@@ -18,7 +18,7 @@ uniform float wind;
 uniform vec2 texelSize;
 // uniform vec2 resolution;
 
-uniform vec4 initial_Tv[126];
+uniform vec4 initial_Tv[152];
 
 float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
 

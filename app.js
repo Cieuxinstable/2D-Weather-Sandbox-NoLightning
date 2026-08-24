@@ -21,7 +21,7 @@ function updateSetupSliders()
   document.getElementById('simWorldProperties').innerHTML = 'cellHeight: ' + cellHeight.toFixed(1) + ' m  &nbsp&nbsp&nbsp   Simulation width: ' + (simWidth / 1000).toFixed(1) + ' km';
 
   document.getElementById('simHeightWarning').style.display = (simHeight == 12000) ? 'none' : 'block';
-  document.getElementById('simResYWarning').style.display = (simResY == 300) ? 'none' : 'block';
+  document.getElementById('simResYWarning').style.display = (simResY == 600) ? 'none' : 'block';
   document.getElementById('simResShowX').value = simResX;
   document.getElementById('simResShowY').value = simResY
   document.getElementById('simHeightShow').value = simHeight + ' m';
@@ -326,6 +326,9 @@ var gl;
 
 var clockEl;
 
+var atmosStatsEl;
+var lastAtmosStats = null; // last computed {CAPE, CIN, LCL_height, shear06, STP}, shown in soundingGraph and the main UI
+
 var simDateTime;
 
 var SETUP_MODE = false;
@@ -433,7 +436,7 @@ var sim_res_y;
 var sim_aspect; //  = sim_res_x / sim_res_y
 var sim_height = 12000;
 
-var cellHeight = 12000. / 300.; // guiControls.simHeight / sim_res_y;  // in meters // cell width is the same
+var cellHeight = 12000. / 600.; // guiControls.simHeight / sim_res_y;  // in meters // cell width is the same
 
 var frameNum = 0;
 var lastFrameNum = 0;
@@ -570,6 +573,89 @@ function dewpoint(W)
 }
 
 function relativeHumd(T, W) { return (W / maxWater(T)) * 100.0; }
+
+////////////// Atmospheric Indices (CAPE / CIN / STP) ///////////////
+
+const gravity = 9.80665; // m/s^2
+
+// Lifts a surface parcel using the same dry/moist adiabat model as the sounding graph's
+// rising-parcel line, integrating buoyancy against the environment to get CAPE, CIN and the LCL height.
+function calcParcelIndices(baseTextureValues, waterTextureValues, wallTextureValues, surfaceLevel)
+{
+  const dz = guiControls.simHeight / sim_res_y;
+  const drylapsePerCell = -(dz * guiControls.dryLapseRate) / 1000.0;
+
+  const water = waterTextureValues[4 * surfaceLevel]; // total water carried by the parcel (conserved during ascent)
+  const potentialTemp0 = baseTextureValues[4 * surfaceLevel + 3];
+
+  let prevTemp = potentialTemp0 - (surfaceLevel / sim_res_y) * guiControls.simHeight * guiControls.dryLapseRate / 1000.0;
+  let prevCloudWater = waterTextureValues[4 * surfaceLevel + 1];
+
+  let CAPE = 0.0;
+  let CIN = 0.0;
+  let LCL_height = guiControls.simHeight;
+  let foundLCL = false;
+  let sawPositiveBuoyancy = false;
+
+  for (let y = surfaceLevel + 1; y < sim_res_y; y++) {
+    if (wallTextureValues[4 * y + 1] == 0)
+      break; // left the fluid domain
+
+    const cloudWater = Math.max(water - maxWater(prevTemp + drylapsePerCell), 0.0);
+    const dWt = (cloudWater - prevCloudWater) * guiControls.evapHeat;
+    const Tparcel = prevTemp + dT_saturated(drylapsePerCell, dWt);
+
+    if (!foundLCL && cloudWater > 0.0) {
+      foundLCL = true;
+      LCL_height = map_range(y, 0, sim_res_y, 0, guiControls.simHeight);
+    }
+
+    const potentialTempEnv = baseTextureValues[4 * y + 3];
+    const Tenv = potentialTempEnv - (y / sim_res_y) * guiControls.simHeight * guiControls.dryLapseRate / 1000.0;
+
+    const work = gravity * ((Tparcel - Tenv) / Tenv) * dz; // buoyant work per unit mass over this layer
+
+    if (Tparcel > Tenv) {
+      CAPE += work;
+      sawPositiveBuoyancy = true;
+    } else if (!sawPositiveBuoyancy) {
+      CIN += work; // negative: layers below the level of free convection
+    }
+
+    prevTemp = Tparcel;
+    prevCloudWater = Math.max(water - maxWater(prevTemp), 0.0);
+  }
+
+  return {CAPE, CIN, LCL_height};
+}
+
+// Bulk (speed-only) wind shear between the surface and 1km / 6km AGL. This sandbox is a 2D
+// vertical slice with a single horizontal wind component, so directional/hodograph shear isn't available.
+function calcBulkShear(baseTextureValues, surfaceLevel)
+{
+  const dz = guiControls.simHeight / sim_res_y;
+  const y1km = Math.min(surfaceLevel + Math.round(1000.0 / dz), sim_res_y - 1);
+  const y6km = Math.min(surfaceLevel + Math.round(6000.0 / dz), sim_res_y - 1);
+
+  const uSurface = rawVelocityTo_ms(baseTextureValues[4 * surfaceLevel]);
+  const u1km = rawVelocityTo_ms(baseTextureValues[4 * y1km]);
+  const u6km = rawVelocityTo_ms(baseTextureValues[4 * y6km]);
+
+  return {shear01 : Math.abs(u1km - uSurface), shear06 : Math.abs(u6km - uSurface)};
+}
+
+// Simplified Significant Tornado Parameter (fixed-layer SPC formula), missing its storm-relative
+// helicity term: true SRH needs a turning wind hodograph, which requires a second horizontal wind
+// component this 2D sandbox doesn't simulate. CAPE / LCL height / 0-6km shear / CIN are used as-is.
+function calcSTP(CAPE, CIN, LCL_height, shear06)
+{
+  const capeTerm = CAPE / 1500.0;
+  const lclTerm = clamp((2000.0 - LCL_height) / 1000.0, 0.0, 1.0);
+  const shearTerm = clamp(shear06 / 20.0, 0.0, 1.5);
+  const cinTerm = clamp((200.0 + CIN) / 150.0, 0.0, 1.0);
+
+  return Math.max(capeTerm * lclTerm * shearTerm * cinTerm, 0.0);
+}
 
 // Print funtions:
 
@@ -3923,6 +4009,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     clockEl.style.fontSize = '35px';
     clockEl.style.color = 'white';
 
+    atmosStatsEl = document.createElement('div');
+    document.body.appendChild(atmosStatsEl);
+
+    atmosStatsEl.innerHTML = '';
+    atmosStatsEl.style.position = 'absolute';
+    atmosStatsEl.style.top = '45px';
+    atmosStatsEl.style.left = '0px';
+    atmosStatsEl.style.fontFamily = 'Monospace';
+    atmosStatsEl.style.fontSize = '16px';
+    atmosStatsEl.style.color = 'white';
+    atmosStatsEl.style.textShadow = '1px 1px 2px black';
+
     simDateTime = new Date(2000, Math.floor(guiControls.month) - 1, (guiControls.month % 1) * 30.417);
 
     // initialize time and solar angle
@@ -4037,6 +4135,31 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       c.lineWidth = 2.0; // 3
       c.strokeStyle = '#FF0000';
       c.stroke();
+
+
+      // Compute and display CAPE / CIN / STP for this column (surface-based parcel)
+      if (reachedAir) {
+        const parcelIndices = calcParcelIndices(baseTextureValues, waterTextureValues, wallTextureValues, surfaceLevel);
+        const shear = calcBulkShear(baseTextureValues, surfaceLevel);
+        const STP = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06);
+
+        lastAtmosStats = {
+          CAPE : parcelIndices.CAPE,
+          CIN : parcelIndices.CIN,
+          LCL_height : parcelIndices.LCL_height,
+          shear06 : shear.shear06,
+          STP : STP,
+        };
+
+        c.font = '16px Arial';
+        c.fillStyle = 'yellow';
+        c.fillText('SBCAPE: ' + lastAtmosStats.CAPE.toFixed(0) + ' J/kg', 10, 20);
+        c.fillText('CIN: ' + lastAtmosStats.CIN.toFixed(0) + ' J/kg', 10, 40);
+        c.fillText('LCL: ' + printAltitude(lastAtmosStats.LCL_height), 10, 60);
+        c.fillText('Shear 0-6km: ' + printVelocity(lastAtmosStats.shear06), 10, 80);
+        c.fillStyle = lastAtmosStats.STP >= 1.0 ? '#FF4444' : 'yellow';
+        c.fillText('STP: ' + lastAtmosStats.STP.toFixed(2), 10, 100);
+      }
 
 
       // Draw wind indicators
@@ -5481,9 +5604,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // generate sounding data for forcing in sim
 
-  var realWorldSounding_T = new Float32Array(504);   // sim_res_y + 1
-  var realWorldSounding_W = new Float32Array(504);   // sim_res_y + 1
-  var realWorldSounding_Vel = new Float32Array(504); // sim_res_y + 1
+  var realWorldSounding_T = new Float32Array(608);   // 152 vec4 = up to sim_res_y + 1 = 607
+  var realWorldSounding_W = new Float32Array(608);   // 152 vec4 = up to sim_res_y + 1 = 607
+  var realWorldSounding_Vel = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
   if (soundingData && soundingData.length > 10) {
     var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
 
@@ -5504,7 +5627,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // generate Initial temperature profile
 
-  var initial_T = new Float32Array(504); // sim_res_y + 1
+  var initial_T = new Float32Array(608); // 152 vec4 = up to sim_res_y + 1 = 607
 
   for (var y = 0; y < sim_res_y + 1; y++) {
     let altitude = y / (sim_res_y + 1) * guiControls.simHeight;
@@ -6635,6 +6758,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       clockEl.innerHTML = dateTimeStr(); // update clock
     else
       clockEl.innerHTML = '';
+
+    if (lastAtmosStats) {
+      atmosStatsEl.innerHTML = 'SBCAPE: ' + lastAtmosStats.CAPE.toFixed(0) + ' J/kg &nbsp; STP: ' + lastAtmosStats.STP.toFixed(2);
+    }
   }
 
 
