@@ -318,6 +318,13 @@ document.addEventListener('DOMContentLoaded', () => {
   createPresetSelect();
   stationSelector = createStationSelect();
   prepareSounding();
+
+  const pendingGridResY = localStorage.getItem('pendingGridResY');
+  if (pendingGridResY) {
+    localStorage.removeItem('pendingGridResY');
+    document.getElementById('simResSelY').value = pendingGridResY;
+    updateSetupSliders();
+  }
 });
 
 
@@ -404,6 +411,9 @@ const guiControls_default = {
   sound : true,
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
   simHeight : 12000,       // meters
+  gridResY : 600,          // vertical grid resolution (cells). Changing it restarts the simulation.
+  CAPE : 0,                // read-only gauge, updated live from the sounding column under the mouse
+  STP : 0,                 // read-only gauge, updated live from the sounding column under the mouse
   twelveHourClock : false, // only for display.  false = metric
   lengthUnit : 'LENGTH_UNIT_METRIC',
   tempUnit : 'TEMP_UNIT_C',
@@ -3490,6 +3500,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   }
 
+  guiControls.gridResY = sim_res_y; // always reflects the live grid resolution, not a saved/default value
+
   function setGuiUniforms()
   { // set all uniforms to new values
     gl.useProgram(boundaryProgram);
@@ -3638,6 +3650,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .listen()
       .name('Apply above altitude');
+
+    fluidParams_folder.add(guiControls, 'CAPE', 0, 4000, 50)
+      .listen()
+      .name('CAPE (J/kg, live)')
+      .domElement.style.pointerEvents = 'none'; // read-only: CAPE is computed from the sounding, not a settable input
 
 
     var UI_folder = datGui.addFolder('User Interaction');
@@ -3980,6 +3997,26 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     });
 
+    advanced_folder.add(guiControls, 'STP', 0, 10, 0.1)
+      .listen()
+      .name('STP (live)')
+      .domElement.style.pointerEvents = 'none'; // read-only: STP is derived from CAPE/CIN/shear, not a settable input
+
+    advanced_folder.add(guiControls, 'gridResY', 100, 600, 10)
+      .listen()
+      .name('Grid Height (restart)')
+      .onFinishChange(function() {
+        if (guiControls.gridResY == sim_res_y)
+          return;
+
+        if (confirm('Changer la hauteur de la grille nécessite de redémarrer la simulation. Le monde actuel sera perdu. Continuer ?')) {
+          localStorage.setItem('pendingGridResY', guiControls.gridResY);
+          location.reload();
+        } else {
+          guiControls.gridResY = sim_res_y; // revert slider to the current live resolution
+        }
+      });
+
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
 
     datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
@@ -4150,6 +4187,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           shear06 : shear.shear06,
           STP : STP,
         };
+
+        // feed the read-only dat.GUI gauges (CAPE / STP folders), picked up via .listen()
+        guiControls.CAPE = lastAtmosStats.CAPE;
+        guiControls.STP = lastAtmosStats.STP;
 
         c.font = '16px Arial';
         c.fillStyle = 'yellow';
