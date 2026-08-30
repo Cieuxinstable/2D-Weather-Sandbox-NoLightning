@@ -1873,6 +1873,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     wind_sound;
     hail_light_sound;
     hail_heavy_sound;
+    hailAudible = false; // tracks whether hail sound is currently playing, so we only log on state changes
 
 
     constructor()
@@ -1888,8 +1889,34 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.loadSound('beach.mp3').then(buffer => { this.beach_sound = this.playLoop(buffer, 0.0); });
       this.loadSound('rain.m4a').then(buffer => { this.rain_sound = this.playLoop(buffer, 0.0); });
       this.loadSound('wind.m4a').then(buffer => { this.wind_sound = this.playLoop(buffer, 0.0); });
-      this.loadSound('hail_light.mp3').then(buffer => { this.hail_light_sound = this.playLoop(buffer, 0.0); });
-      this.loadSound('hail_heavy.mp3').then(buffer => { this.hail_heavy_sound = this.playLoop(buffer, 0.0); });
+      this.loadSound('hail_light.mp3')
+        .then(buffer => {
+          this.hail_light_sound = this.playLoop(buffer, 0.0);
+          console.log('[hail audio] resources/sounds/hail_light.mp3 loaded OK, duration:', buffer.duration.toFixed(2) + 's');
+        })
+        .catch(err => { console.error('[hail audio] FAILED to load resources/sounds/hail_light.mp3:', err); });
+
+      this.loadSound('hail_heavy.mp3')
+        .then(buffer => {
+          this.hail_heavy_sound = this.playLoop(buffer, 0.0);
+          console.log('[hail audio] resources/sounds/hail_heavy.mp3 loaded OK, duration:', buffer.duration.toFixed(2) + 's');
+        })
+        .catch(err => { console.error('[hail audio] FAILED to load resources/sounds/hail_heavy.mp3:', err); });
+
+      // Browsers suspend a freshly-created AudioContext until a real user gesture (click/keydown) resumes it.
+      // The context is normally created during app startup, which can happen too far from the "Create
+      // Simulation" click (after several awaited loading steps) for the browser to count it as the same
+      // gesture, silently leaving all sounds muted. Unlock explicitly on the next user interaction.
+      if (this.audioCtx.state === 'suspended') {
+        const unlock = () => {
+          this.audioCtx.resume().then(() => { console.log('[hail audio] AudioContext unlocked by user interaction, state:', this.audioCtx.state); });
+          window.removeEventListener('click', unlock);
+          window.removeEventListener('keydown', unlock);
+        };
+        window.addEventListener('click', unlock);
+        window.addEventListener('keydown', unlock);
+        console.log('[hail audio] AudioContext started suspended, waiting for a click or keypress to unlock it.');
+      }
     }
 
     async loadSound(url)
@@ -2097,6 +2124,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
             if (hailColumnsFound > 0 && weightedVolume > 0) { // hail actually detected somewhere in view: otherwise stays silent
               hailVolume = clamp(weightedVolume / sampleWidth_2, 0, 1) * hailIntensity * distVolumeMult;
+              hailVolume = Math.max(hailVolume, 0.15);        // force an audible test floor as soon as hail is detected on screen
               hailPan = clamp(weightedPos / (totalWeight * sampleWidth_2), -1, 1);
               hailHeavyMix = map_range_C(hailIntensity, 0.4, 0.8, 0.0, 1.0); // crossfade light -> heavy hail sample
             }
@@ -2148,6 +2176,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     setHailSound(volume, heavyMix, pan = 0.0)
     {
       heavyMix = clamp(heavyMix, 0, 1);
+
+      const isAudibleNow = volume > 0.001;
+      if (isAudibleNow !== this.hailAudible) { // log only on silence <-> audible transitions, not every frame
+        if (isAudibleNow) {
+          console.log('[hail audio] hail detected on screen -> playing', heavyMix > 0.5 ? 'hail_heavy.mp3' : 'hail_light.mp3', 'volume:', volume.toFixed(2), 'pan:', pan.toFixed(2),
+                      '| light_sound loaded:', !!this.hail_light_sound, '| heavy_sound loaded:', !!this.hail_heavy_sound, '| AudioContext state:', this.audioCtx.state);
+        } else {
+          console.log('[hail audio] no hail on screen -> muted');
+        }
+        this.hailAudible = isAudibleNow;
+      }
+
       this.setSoundGainAndPan(this.hail_light_sound, volume * (1.0 - heavyMix), pan);
       this.setSoundGainAndPan(this.hail_heavy_sound, volume * heavyMix, pan);
     }
