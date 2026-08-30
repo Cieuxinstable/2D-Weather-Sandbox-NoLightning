@@ -1894,14 +1894,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           this.hail_light_sound = this.playLoop(buffer, 0.0);
           console.log('[hail audio] resources/sounds/hail_light.mp3 loaded OK, duration:', buffer.duration.toFixed(2) + 's');
         })
-        .catch(err => { console.error('[hail audio] FAILED to load resources/sounds/hail_light.mp3:', err); });
+        .catch(err => { console.error('Erreur chargement hail_light:', err); });
 
       this.loadSound('hail_heavy.mp3')
         .then(buffer => {
           this.hail_heavy_sound = this.playLoop(buffer, 0.0);
           console.log('[hail audio] resources/sounds/hail_heavy.mp3 loaded OK, duration:', buffer.duration.toFixed(2) + 's');
         })
-        .catch(err => { console.error('[hail audio] FAILED to load resources/sounds/hail_heavy.mp3:', err); });
+        .catch(err => { console.error('Erreur chargement hail_heavy:', err); });
 
       // Browsers suspend a freshly-created AudioContext until a real user gesture (click/keydown) resumes it.
       // The context is normally created during app startup, which can happen too far from the "Create
@@ -2180,7 +2180,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const isAudibleNow = volume > 0.001;
       if (isAudibleNow !== this.hailAudible) { // log only on silence <-> audible transitions, not every frame
         if (isAudibleNow) {
-          console.log('[hail audio] hail detected on screen -> playing', heavyMix > 0.5 ? 'hail_heavy.mp3' : 'hail_light.mp3', 'volume:', volume.toFixed(2), 'pan:', pan.toFixed(2),
+          console.log('Lecture du son de grêle :', volume.toFixed(2), '(' + (heavyMix > 0.5 ? 'hail_heavy.mp3' : 'hail_light.mp3') + ', pan:', pan.toFixed(2) + ')',
                       '| light_sound loaded:', !!this.hail_light_sound, '| heavy_sound loaded:', !!this.hail_heavy_sound, '| AudioContext state:', this.audioCtx.state);
         } else {
           console.log('[hail audio] no hail on screen -> muted');
@@ -4231,6 +4231,58 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     } else {
       updateSunlight('MANUAL_ANGLE'); // set angle from savefile
     }
+  }
+
+  // Keeps guiControls.CAPE/STP (and therefore hail spawning, which reads guiControls.CAPE as its
+  // instability signal every simulation iteration) updating every frame even when the sounding graph
+  // panel is closed. Without this, CAPE/STP were only ever computed inside soundingGraph.draw(), which
+  // only runs while guiControls.showGraph is true -- meaning in normal play (panel closed, the default)
+  // CAPE stayed frozen at 0 forever and hail could never spawn at all, regardless of any visual/audio fix.
+  function updateAtmosStatsForHail(simXpos)
+  {
+    simXpos = clamp(Math.floor(simXpos), 0, sim_res_x - 1);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    var baseTextureValues = new Float32Array(4 * sim_res_y);
+    gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, baseTextureValues); // read a vertical column of cells
+
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    var waterTextureValues = new Float32Array(4 * sim_res_y);
+    gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues);
+
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    var wallTextureValues = new Int32Array(4 * sim_res_y);
+    gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, wallTextureValues);
+
+    var reachedAir = false;
+    var surfaceLevel;
+
+    for (var y = 0; y < sim_res_y; y++) {
+      if (wallTextureValues[4 * y + 1] != 0) { // first fluid (non-wall) cell = the surface
+        reachedAir = true;
+        surfaceLevel = y;
+        break;
+      }
+    }
+
+    if (!reachedAir)
+      return; // camera centered entirely over a wall/void column: nothing to compute
+
+    const parcelIndices = calcParcelIndices(baseTextureValues, waterTextureValues, wallTextureValues, surfaceLevel);
+    const shear = calcBulkShear(baseTextureValues, surfaceLevel);
+    const STP = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06);
+
+    lastAtmosStats = {
+      CAPE : parcelIndices.CAPE,
+      CIN : parcelIndices.CIN,
+      LCL_height : parcelIndices.LCL_height,
+      shear06 : shear.shear06,
+      STP : STP,
+    };
+
+    guiControls.CAPE = lastAtmosStats.CAPE;
+    guiControls.STP = lastAtmosStats.STP;
   }
 
   var soundingGraph = {
@@ -6400,6 +6452,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       if (guiControls.showGraph) {
         soundingGraph.draw(Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x))), Math.floor(mouseYinSim * sim_res_y));
+      } else {
+        // panel closed: still keep CAPE/STP alive (at the camera's center column) so hail can spawn/sound/render
+        updateAtmosStatsForHail((-cam.curXpos + 1) * 0.5 * sim_res_x);
       }
 
     } // END OF NOT SETUP MODE
