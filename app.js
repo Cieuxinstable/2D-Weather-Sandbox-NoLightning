@@ -721,6 +721,14 @@ function printSoilMoisture(soilMoisture_mm)
     return soilMoisture_mm.toFixed(1) + ' mm';
 }
 
+function printHailSize(hailSize_mm)
+{
+  if (guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL') {
+    return (hailSize_mm / 25.4).toFixed(2) + '"'; // inches
+  } else
+    return hailSize_mm.toFixed(1) + ' mm';
+}
+
 
 function printDistance(m)
 {
@@ -974,6 +982,7 @@ class Weatherstation
   #velocity = 0;     // ms
   #soilMoisture = 0; // mm
   #snowHeight = 0;   // cm
+  #hailSize = 0;     // mm, estimated diameter
   #airQuality = 0;   // AQI
   #waterTemperature = 0;
 
@@ -1078,7 +1087,8 @@ class Weatherstation
           {label : 'Air Quality', data : [], backgroundColor : '#803c00', borderColor : '#803c00', radius : 0, borderWidth : 1, fill : false, hidden : true},                           //
           {label : 'Precipitation', data : [], backgroundColor : '#0055FF', borderColor : '#0055FF', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true},    //
           {label : 'Snow Height', data : [], backgroundColor : '#FFFFFF', borderColor : '#FFFFFF', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true},      //
-          {label : 'Water Temperature', data : [], backgroundColor : '#406cff', borderColor : '#406cff', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true} //
+          {label : 'Water Temperature', data : [], backgroundColor : '#406cff', borderColor : '#406cff', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true}, //
+          {label : 'Taille grêle (mm)', data : [], backgroundColor : '#FF3030', borderColor : '#FF3030', radius : 0, borderWidth : 1, fill : false, hidden : true}                       //
         ]
       },
       options : {
@@ -1140,6 +1150,7 @@ class Weatherstation
       this.#historyChart.data.datasets[1].data.push(convertTempToSelectedUnit(this.#dewpoint));
       this.#historyChart.data.datasets[2].data.push(convertVelocityToSelectedUnit(this.#velocity));
       this.#historyChart.data.datasets[3].data.push(this.#airQuality);
+      this.#historyChart.data.datasets[7].data.push(this.#hailSize);
 
       if (this.#isOnLand) {
         this.#historyChart.data.datasets[4].data.push(guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL' ? mmToIn(this.#soilMoisture) : this.#soilMoisture);
@@ -1259,6 +1270,21 @@ class Weatherstation
 
     this.#airQuality = waterTextureValues[4 + 3] * 300.0; // read smoke
 
+    // Estimate local hail diameter: no dedicated hail field exists in the sim, so this combines
+    // the global CAPE reading (drives hailstone size the same way the precipitation shader does),
+    // local precipitation intensity (only report hail where a storm is actually present overhead),
+    // and surface temperature (melts hail down to 0 as the ground warms above freezing).
+    if (guiControls.hailEnabled) {
+      const capeExcess = Math.max(guiControls.CAPE - guiControls.hailCapeThreshold, 0);
+      const stormFactor = clamp(waterTextureValues[4 + 2] / 2.0, 0, 1); // local precipitation channel
+      let hailSizeMM = Math.min(capeExcess * 0.02, 80) * stormFactor;  // up to ~80mm for extreme CAPE
+      if (this.#temperature > 0)
+        hailSizeMM *= Math.max(1 - this.#temperature * guiControls.hailMeltingRate * 5, 0); // melts away as surface warms
+      this.#hailSize = hailSizeMM;
+    } else {
+      this.#hailSize = 0;
+    }
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
     gl.readBuffer(gl.COLOR_ATTACHMENT0); // light texture
     var lightTextureValues = new Float32Array(4);
@@ -1335,6 +1361,12 @@ class Weatherstation
         c.fillText(printSnowHeight(this.#snowHeight), 67, 52);
         c.font = '14px Arial';
         c.fillText('❄', 85, 65);
+      }
+
+      if (this.#hailSize > 0.5) {
+        c.fillStyle = '#FF3030';
+        c.font = '12px Arial';
+        c.fillText(printHailSize(this.#hailSize), 67, 65);
       }
     }
 
@@ -1839,6 +1871,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     beach_sound;
     rain_sound;
     wind_sound;
+    hail_light_sound;
+    hail_heavy_sound;
 
 
     constructor()
@@ -1854,6 +1888,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.loadSound('beach.mp3').then(buffer => { this.beach_sound = this.playLoop(buffer, 0.0); });
       this.loadSound('rain.m4a').then(buffer => { this.rain_sound = this.playLoop(buffer, 0.0); });
       this.loadSound('wind.m4a').then(buffer => { this.wind_sound = this.playLoop(buffer, 0.0); });
+      this.loadSound('hail_light.mp3').then(buffer => { this.hail_light_sound = this.playLoop(buffer, 0.0); });
+      this.loadSound('hail_heavy.mp3').then(buffer => { this.hail_heavy_sound = this.playLoop(buffer, 0.0); });
     }
 
     async loadSound(url)
@@ -1998,17 +2034,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         let tempC = KtoC(potentialToRealT(baseTextureValues[3], justAboveSurfaceCellY));
 
+        gl.readBuffer(gl.COLOR_ATTACHMENT1); // watertexture
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, justAboveSurfaceCellY, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+
         // rain sound
 
         let rainVolume = 0;
 
         if (tempC > 0) {
-
-          gl.readBuffer(gl.COLOR_ATTACHMENT1); // watertexture
-          var waterTextureValues = new Float32Array(4);
-
-          gl.readPixels(simXpos, justAboveSurfaceCellY, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
-
           rainVolume = Math.pow(waterTextureValues[2] * 0.5, 0.5);
 
           rainVolume *= map_range_C(tempC, 0., 3., 0., 1.); // rain sound fades as temperature approaches 0 (wet snow)
@@ -2017,6 +2051,25 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
+
+        // hail sound: crossfades from light to heavy hail as CAPE climbs above the hail threshold,
+        // scaled by local precipitation intensity (proxy for "how much hail is currently on screen")
+        let hailVolume = 0;
+        let hailHeavyMix = 0;
+
+        if (guiControls.hailEnabled) {
+          const capeExcess = Math.max(guiControls.CAPE - guiControls.hailCapeThreshold, 0);
+          const hailIntensity = clamp(capeExcess / 2000, 0, 1); // 0 = no hail, 1 = extreme hail (2000+ J/kg above threshold)
+
+          if (hailIntensity > 0) {
+            const localStormFactor = clamp(Math.pow(waterTextureValues[2] * 0.5, 0.5), 0, 1);
+
+            hailVolume = hailIntensity * localStormFactor * distVolumeMult;
+            hailHeavyMix = map_range_C(hailIntensity, 0.4, 0.8, 0.0, 1.0); // crossfade light -> heavy hail sample
+          }
+        }
+
+        this.setHailSound(hailVolume, hailHeavyMix);
 
         //    console.log(distVolumeMult, rainVolume, windVolume);
       }
@@ -2057,6 +2110,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       sound.pan.value = Number.isFinite(pan) ? pan : 0;
     }
 
+    // volume: overall loudness (0 = silent). heavyMix: 0 = pure light hail sample, 1 = pure heavy hail sample
+    setHailSound(volume, heavyMix)
+    {
+      heavyMix = clamp(heavyMix, 0, 1);
+      this.setSoundGainAndPan(this.hail_light_sound, volume * (1.0 - heavyMix));
+      this.setSoundGainAndPan(this.hail_heavy_sound, volume * heavyMix);
+    }
+
     mute()
     {
       this.setSoundGainAndPan(this.forest_sound, 0);
@@ -2064,6 +2125,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.setSoundGainAndPan(this.urban_sound, 0);
       this.setSoundGainAndPan(this.rain_sound, 0);
       this.setSoundGainAndPan(this.wind_sound, 0);
+      this.setSoundGainAndPan(this.hail_light_sound, 0);
+      this.setSoundGainAndPan(this.hail_heavy_sound, 0);
       this.jetEngineSound.mute();
     }
   }
