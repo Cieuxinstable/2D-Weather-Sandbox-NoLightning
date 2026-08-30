@@ -28,8 +28,12 @@ void main()
 
   float size = 4.0; // 4.0
 
-  if (mass[1] > 0. && mass[0] == 0. && density >= 1.0) // hail: bigger hailstones (denser) render as bigger points
-    size = 4.0 + (density - 1.0) * 6.0;
+  // hail: classified purely by density so it keeps rendering as hail while it gradually melts
+  // (does NOT require mass[0]==0 -- a partially-melted/wet hailstone is still hail, not "disappeared")
+  if (mass[1] > 0. && density >= 1.0) {
+    float hailGrowth = clamp(density - 1.0, 0.0, 1.5) / 1.5;         // 0 at the CAPE threshold, 1 at max density (2.5)
+    size = mix(4.0, 18.0, hailGrowth);                               // diameter 4px (r=2px) -> 18px (r=9px) as CAPE increases
+  }
 
   gl_PointSize = view[2] * size / aspectRatios[0];
 

@@ -406,7 +406,7 @@ const guiControls_default = {
   lightningEnabled : true,
   hailEnabled : true,
   hailCapeThreshold : 1500, // J/kg. CAPE above which storms start producing hail
-  hailMeltingRate : 0.02,   // how fast hail melts back to rain as it falls through air above 0C
+  hailMeltingRate : 0.002,  // how fast hail melts back to rain as it falls through air above 0C (kept low so it can actually reach the ground)
   showDrops : false,
   paused : false,
   IterPerFrame : 10,
@@ -721,12 +721,12 @@ function printSoilMoisture(soilMoisture_mm)
     return soilMoisture_mm.toFixed(1) + ' mm';
 }
 
-function printHailSize(hailSize_mm)
+function printHailSize(hailSize_cm)
 {
   if (guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL') {
-    return (hailSize_mm / 25.4).toFixed(2) + '"'; // inches
+    return mmToIn(hailSize_cm).toFixed(2) + '"'; // inches
   } else
-    return hailSize_mm.toFixed(1) + ' mm';
+    return hailSize_cm.toFixed(2) + ' cm';
 }
 
 
@@ -982,7 +982,7 @@ class Weatherstation
   #velocity = 0;     // ms
   #soilMoisture = 0; // mm
   #snowHeight = 0;   // cm
-  #hailSize = 0;     // mm, estimated diameter
+  #hailSize = 0;     // cm, estimated diameter
   #airQuality = 0;   // AQI
   #waterTemperature = 0;
 
@@ -1088,7 +1088,7 @@ class Weatherstation
           {label : 'Precipitation', data : [], backgroundColor : '#0055FF', borderColor : '#0055FF', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true},    //
           {label : 'Snow Height', data : [], backgroundColor : '#FFFFFF', borderColor : '#FFFFFF', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true},      //
           {label : 'Water Temperature', data : [], backgroundColor : '#406cff', borderColor : '#406cff', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true}, //
-          {label : 'Taille grêle (mm)', data : [], backgroundColor : '#FF3030', borderColor : '#FF3030', radius : 0, borderWidth : 1, fill : false, hidden : true}                       //
+          {label : 'Taille grêle (cm)', data : [], backgroundColor : '#FF3030', borderColor : '#FF3030', radius : 0, borderWidth : 1, fill : false, hidden : true}                       //
         ]
       },
       options : {
@@ -1150,7 +1150,7 @@ class Weatherstation
       this.#historyChart.data.datasets[1].data.push(convertTempToSelectedUnit(this.#dewpoint));
       this.#historyChart.data.datasets[2].data.push(convertVelocityToSelectedUnit(this.#velocity));
       this.#historyChart.data.datasets[3].data.push(this.#airQuality);
-      this.#historyChart.data.datasets[7].data.push(this.#hailSize);
+      this.#historyChart.data.datasets[7].data.push(guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL' ? mmToIn(this.#hailSize) : this.#hailSize);
 
       if (this.#isOnLand) {
         this.#historyChart.data.datasets[4].data.push(guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL' ? mmToIn(this.#soilMoisture) : this.#soilMoisture);
@@ -1277,10 +1277,10 @@ class Weatherstation
     if (guiControls.hailEnabled) {
       const capeExcess = Math.max(guiControls.CAPE - guiControls.hailCapeThreshold, 0);
       const stormFactor = clamp(waterTextureValues[4 + 2] / 2.0, 0, 1); // local precipitation channel
-      let hailSizeMM = Math.min(capeExcess * 0.02, 80) * stormFactor;  // up to ~80mm for extreme CAPE
+      let hailSizeCM = Math.min(capeExcess * 0.002, 8) * stormFactor;  // up to ~8cm for extreme CAPE
       if (this.#temperature > 0)
-        hailSizeMM *= Math.max(1 - this.#temperature * guiControls.hailMeltingRate * 5, 0); // melts away as surface warms
-      this.#hailSize = hailSizeMM;
+        hailSizeCM *= Math.max(1 - this.#temperature * 0.04, 0); // melts away as surface warms
+      this.#hailSize = hailSizeCM;
     } else {
       this.#hailSize = 0;
     }
@@ -1363,7 +1363,7 @@ class Weatherstation
         c.fillText('❄', 85, 65);
       }
 
-      if (this.#hailSize > 0.5) {
+      if (this.#hailSize > 0.2) {
         c.fillStyle = '#FF3030';
         c.font = '12px Arial';
         c.fillText(printHailSize(this.#hailSize), 67, 65);
@@ -3960,7 +3960,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Seuil CAPE pour la grêle');
 
-    precipitation_folder.add(guiControls, 'hailMeltingRate', 0.0005, 0.05, 0.0005)
+    precipitation_folder.add(guiControls, 'hailMeltingRate', 0.0001, 0.01, 0.0001)
       .onChange(function() {
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'hailMeltingRate'), guiControls.hailMeltingRate);

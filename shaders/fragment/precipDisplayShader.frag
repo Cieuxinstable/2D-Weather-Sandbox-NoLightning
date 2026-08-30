@@ -29,17 +29,18 @@ void main()
 
   float opacity = (mass_out[WATER] + mass_out[ICE]) * 0.10;
 
-  if (mass_out[ICE] > 0.) {                                        // has ice
-    if (mass_out[WATER] == 0.) {                                   // has no liquid water, pure ice
-      if (density_out < 1.0)                                       // snow
-        fragmentColor = vec4(1.0, 1.0, 1.0, opacity);                // white
-      else                                                          // hail
-        fragmentColor = vec4(1.0, 0.15, 0.15, min(opacity * 1.4, 1.0)); // red, more opaque, clearly distinct from snow/rain
-    } else {                                                       // mix of ice and water
-      fragmentColor = vec4(0.5, 1.0, 1.0, opacity);   // light blue
+  if (mass_out[ICE] > 0.) {                    // has ice
+    if (density_out >= 1.0) {                  // hail: classified by density alone, so it STAYS red while gradually
+                                                // melting instead of vanishing the instant any meltwater appears
+      float hailOpacity = clamp(opacity * 3.0 + 0.35, 0.0, 1.0); // strong minimum visibility regardless of mass
+      fragmentColor = vec4(1.0, 0.1, 0.1, hailOpacity);          // bright red
+    } else if (mass_out[WATER] == 0.) {        // pure light ice, no liquid water
+      fragmentColor = vec4(1.0, 1.0, 1.0, opacity); // snow, white
+    } else {                                   // wet snow: mix of ice and water
+      fragmentColor = vec4(0.5, 1.0, 1.0, opacity); // light blue
     }
-  } else {                                            // rain
-    fragmentColor = vec4(0.0, 0.5, 1.0, opacity);     // dark blue
+  } else {                                     // rain
+    fragmentColor = vec4(0.0, 0.5, 1.0, opacity); // dark blue
   }
 
   // fragmentColor = vec4(1.0, 1.0, 0.0, 1.0); // all highly visible for DEBUG

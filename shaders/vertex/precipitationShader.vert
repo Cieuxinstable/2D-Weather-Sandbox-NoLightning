@@ -215,6 +215,8 @@ void main()
       // float surfaceArea = sqrt(totalMass); // As if droplet is a circle (2D)
       float surfaceArea = pow(totalMass, 1. / 3.); // As if droplet is a sphere (3D)
 
+      bool isHail = density >= 1.0 && mass[ICE] > 0.0; // dense, ice-carrying particle = hail (checked against the values at the START of this iteration, so it stays true while gradually melting)
+
       // float growthRate = clamp(map_range(realTemp, CtoK(0.0), CtoK(-30.0), growthRate0C, growthRate_30C), growthRate0C, growthRate_30C); // the colder it gets the faster ice forms
       float growthRate = max(map_range(realTemp, CtoK(0.0), CtoK(-30.0), growthRate0C, growthRate_30C), growthRate0C); // the colder it gets the faster ice forms
 
@@ -246,9 +248,7 @@ void main()
       } else {                                                                                                    // above freezing
         newMass[WATER] += growth;                                                                                 // water growth
 
-        bool isHail = density >= 1.0 && mass[ICE] > 0.0; // pure ice falling at/above rain speed = hail
-
-        float effectiveMeltingRate = isHail ? hailMeltingRate : meltingRate; // hail melts at its own rate as it nears warm ground air
+        float effectiveMeltingRate = isHail ? hailMeltingRate : meltingRate; // hail melts at its own (slower) rate as it nears warm ground air
 
         float melting = min((realTemp - CtoK(0.0)) * effectiveMeltingRate * surfaceArea, newMass[ICE]); // snow / hail melting
         newMass[ICE] -= melting;
@@ -283,7 +283,8 @@ void main()
       // Update position
       // move with air    * 2. because droplet position goes from -1. to 1
       newPos += base.xy / resolution * 2.;
-      newPos.y -= fallSpeed * newDensity * sqrt(totalMass / surfaceArea); // fall speed relative to air
+      float fallSpeedMult = newDensity * (isHail ? 1.5 : 1.0); // hail falls noticeably faster than dense rain/wet snow of the same density
+      newPos.y -= fallSpeed * fallSpeedMult * sqrt(totalMass / surfaceArea); // fall speed relative to air
       /*
        // falling at fixed speed:
       float cellHeight = texelSize.y * 12000.0; // in meters
