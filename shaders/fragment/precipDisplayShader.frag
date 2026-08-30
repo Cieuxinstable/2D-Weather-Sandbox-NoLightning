@@ -24,6 +24,13 @@ void main()
   if (!isHailParticle && showAllDrops < 0.5)
     discard; // outside debug mode, only hail renders as individual particles
 
+  // Round the square point sprite into an actual circle: gl_PointCoord goes 0..1 across the sprite,
+  // so distance from its center (0.5, 0.5) tells us how far out we are; 1.0 = at the sprite's edge.
+  float distFromCenter = length(gl_PointCoord - vec2(0.5)) * 2.0;
+  if (distFromCenter > 1.0)
+    discard; // outside the circle: this is a corner of the square sprite, not part of the bubble
+  float circleEdgeFade = 1.0 - smoothstep(0.85, 1.0, distFromCenter); // soft antialiased edge
+
   float opacity = (mass_out[WATER] + mass_out[ICE]) * 0.10;
 
   if (isHailParticle) {                        // hail: classified by density alone, so it STAYS red while gradually
@@ -38,6 +45,8 @@ void main()
   } else {                                      // rain
     fragmentColor = vec4(0.0, 0.5, 1.0, opacity); // dark blue
   }
+
+  fragmentColor.a *= circleEdgeFade;
 
   // fragmentColor = vec4(1.0, 1.0, 0.0, 1.0); // all highly visible for DEBUG
 }
