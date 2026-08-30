@@ -28,8 +28,8 @@ void main()
 
   float size = 4.0; // 4.0
 
-  // if(mass[1] > 0. && density == 1.0) // hail
-  //   size = 0.6;
+  if (mass[1] > 0. && mass[0] == 0. && density >= 1.0) // hail: bigger hailstones (denser) render as bigger points
+    size = 4.0 + (density - 1.0) * 6.0;
 
   gl_PointSize = view[2] * size / aspectRatios[0];
 

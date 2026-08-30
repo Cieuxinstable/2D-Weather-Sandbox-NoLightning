@@ -47,6 +47,10 @@ uniform float freezingRate;       // 0.0002
 uniform float meltingRate;        // 0.0015
 uniform float evapRate;           // 0.0005
 uniform float lightningEnabled;   // 1.0 = allow new lightning strikes to spawn, 0.0 = disabled
+uniform float currentCAPE;        // most recent CAPE reading (J/kg) from the sounding column, used as a storm-intensity proxy
+uniform float hailEnabled;        // 1.0 = allow hail to form, 0.0 = disabled
+uniform float hailCapeThreshold;  // minimum CAPE (J/kg) needed for hail to start forming
+uniform float hailMeltingRate;    // melting speed applied to hail as it falls through air above 0C
 
 #include "common.glsl"
 
@@ -115,9 +119,21 @@ void main()
 
         if (realTemp < CtoK(0.0)) {                                      // below 0 C
           newMass[WATER] = 0.0;                                          // enable
-          newMass[ICE] = initalMass;                                     // snow
-          feedback[HEAT] += newMass[ICE] * meltingHeat;                  // add heat of freezing
+          newMass[ICE] = initalMass;                                     // snow, unless upgraded to hail below
           newDensity = snowDensity;
+
+          const float hailStormDensityThreshold = 2.0; // minimum cloud+precip density for a storm strong enough to produce hail
+          float stormDensity = water[CLOUD] + water[PRECIPITATION];
+          float capeExcess = max(currentCAPE - hailCapeThreshold, 0.0);
+          float hailChance = clamp(capeExcess / 3000.0, 0.0, 1.0); // higher CAPE above the threshold -> hail forms more often
+
+          if (hailEnabled > 0.5 && stormDensity > hailStormDensityThreshold &&
+              random2d(vec2(texCoord.x * 91.7, texCoord.y * 133.1 + iterNum * 0.013)) < hailChance) { // Spawn hail instead of snow
+            newMass[ICE] = initalMass + min(capeExcess * 0.0002, 1.5); // higher CAPE -> bigger hailstones
+            newDensity = min(1.0 + capeExcess * 0.0006, 2.5);          // higher CAPE -> denser, faster-falling hail
+          }
+
+          feedback[HEAT] += newMass[ICE] * meltingHeat;                  // add heat of freezing
 
           vec4 lightningData = texture(lightningDataTex, vec2(0.5)); // data from last lightning bolt
 
@@ -230,13 +246,17 @@ void main()
       } else {                                                                                                    // above freezing
         newMass[WATER] += growth;                                                                                 // water growth
 
-        float melting = min((realTemp - CtoK(0.0)) * meltingRate * surfaceArea /* / newDensity */, newMass[ICE]); // 0.0002 snow / hail melting
+        bool isHail = density >= 1.0 && mass[ICE] > 0.0; // pure ice falling at/above rain speed = hail
+
+        float effectiveMeltingRate = isHail ? hailMeltingRate : meltingRate; // hail melts at its own rate as it nears warm ground air
+
+        float melting = min((realTemp - CtoK(0.0)) * effectiveMeltingRate * surfaceArea, newMass[ICE]); // snow / hail melting
         newMass[ICE] -= melting;
         newMass[WATER] += melting;
         feedback[HEAT] -= melting * meltingHeat;
 
-        newDensity = min(newDensity + (melting / totalMass) * 1.00,
-                         1.0); // density increases upto 1.0 as snow melts
+        float meltFraction = clamp(melting / totalMass, 0.0, 1.0);
+        newDensity = mix(newDensity, 1.0, meltFraction); // density relaxes toward 1.0 (rain) as ice melts away, shrinking hail back down
       }
 
       float dropletTemp = potentialToRealT(base[TEMPERATURE]);                                       // should be wetbulb temperature...

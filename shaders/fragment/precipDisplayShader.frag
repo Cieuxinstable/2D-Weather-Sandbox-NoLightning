@@ -29,13 +29,13 @@ void main()
 
   float opacity = (mass_out[WATER] + mass_out[ICE]) * 0.10;
 
-  if (mass_out[ICE] > 0.) {                           // has ice
-    if (mass_out[WATER] == 0.) {                      // has no liquid water, pure ice
-      if (density_out < 1.0)                          // snow
-        fragmentColor = vec4(1.0, 1.0, 1.0, opacity); // white
-      else
-        fragmentColor = vec4(1.0, 1.0, 0.0, opacity); // hail
-    } else {                                          // mix of ice and water
+  if (mass_out[ICE] > 0.) {                                        // has ice
+    if (mass_out[WATER] == 0.) {                                   // has no liquid water, pure ice
+      if (density_out < 1.0)                                       // snow
+        fragmentColor = vec4(0.85, 0.9, 1.0, opacity);              // pale, slightly cool white
+      else                                                          // hail
+        fragmentColor = vec4(1.0, 1.0, 1.0, min(opacity * 1.4, 1.0)); // bright, clear white, more opaque
+    } else {                                                       // mix of ice and water
       fragmentColor = vec4(0.5, 1.0, 1.0, opacity);   // light blue
     }
   } else {                                            // rain

@@ -404,6 +404,9 @@ const guiControls_default = {
   realDewPoint : false, // show real dew point in graph, instead of dew point with cloud water included
   enablePrecipitation : true,
   lightningEnabled : true,
+  hailEnabled : true,
+  hailCapeThreshold : 1500, // J/kg. CAPE above which storms start producing hail
+  hailMeltingRate : 0.02,   // how fast hail melts back to rain as it falls through air above 0C
   showDrops : false,
   paused : false,
   IterPerFrame : 10,
@@ -3543,6 +3546,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingRate'), guiControls.meltingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapRate'), guiControls.evapRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningEnabled'), guiControls.lightningEnabled ? 1.0 : 0.0);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'hailEnabled'), guiControls.hailEnabled ? 1.0 : 0.0);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'hailCapeThreshold'), guiControls.hailCapeThreshold);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'hailMeltingRate'), guiControls.hailMeltingRate);
     gl.useProgram(postProcessingProgram);
     gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
   }
@@ -3876,6 +3882,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningEnabled'), guiControls.lightningEnabled ? 1.0 : 0.0);
       })
       .name('Activer la foudre');
+
+    precipitation_folder.add(guiControls, 'hailEnabled')
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'hailEnabled'), guiControls.hailEnabled ? 1.0 : 0.0);
+      })
+      .name('Activer la grêle');
+
+    precipitation_folder.add(guiControls, 'hailCapeThreshold', 500, 4000, 50)
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'hailCapeThreshold'), guiControls.hailCapeThreshold);
+      })
+      .name('Seuil CAPE pour la grêle');
+
+    precipitation_folder.add(guiControls, 'hailMeltingRate', 0.0005, 0.05, 0.0005)
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'hailMeltingRate'), guiControls.hailMeltingRate);
+      })
+      .name('Vitesse de fonte (Température au sol)');
 
 
     var display_folder = datGui.addFolder('Display');
@@ -6157,6 +6184,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
               gl.useProgram(precipitationProgram);
               gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'iterNum'), iterNum);
+              gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'currentCAPE'), guiControls.CAPE);
               gl.enable(gl.BLEND);
               gl.blendFunc(gl.ONE, gl.ONE); // add everything together
               gl.activeTexture(gl.TEXTURE0);
