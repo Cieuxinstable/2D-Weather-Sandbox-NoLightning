@@ -205,8 +205,10 @@ void main()
       if (texture(baseTex, vec2(texCoord.x, texCoord.y + texelSize.y))[TEMPERATURE] > 500.) // if above cell was already wall. because of fast fall speed
         newPos.y += texelSize.y * 1.;                                                       // *2. ? move position up so that the water/snow is correcty added to the ground
 
-      deposition[RAIN_DEPOSITION] = newMass[WATER];                                         // rain accumulation
-      deposition[SNOW_DEPOSITION] = newMass[ICE];                                           // snow accumulation
+      bool isHailAtGround = newDensity >= 1.0 && newMass[ICE] > 0.0; // hail deposits as water, NOT snow, so it never inflates the station's snow-height reading
+
+      deposition[RAIN_DEPOSITION] = newMass[WATER] + (isHailAtGround ? newMass[ICE] : 0.0); // rain (and hail) accumulation
+      deposition[SNOW_DEPOSITION] = isHailAtGround ? 0.0 : newMass[ICE];                    // snow accumulation only -- excludes hail
 
       disableDroplet();
 

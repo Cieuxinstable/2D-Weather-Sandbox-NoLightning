@@ -1365,8 +1365,8 @@ class Weatherstation
 
       if (this.#hailSize > 0.2) {
         c.fillStyle = '#FF3030';
-        c.font = '12px Arial';
-        c.fillText(printHailSize(this.#hailSize), 67, 65);
+        c.font = 'bold 11px Arial';
+        c.fillText('🧊 Grêle ' + printHailSize(this.#hailSize), 0, 65);
       }
     }
 
@@ -2052,10 +2052,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
 
-        // hail sound: scans a strip across the visible view (like the forest/beach/urban ambience above)
-        // so the sound is only heard when hail-bearing precipitation is actually within/near view, fading
-        // in as it gets closer to screen center and panning left/right towards where it actually is.
-        // Muted entirely (volume 0) when nothing is found in the sampled strip.
+        // hail sound: there is no per-particle "is this a hail particle" query available from JS (particles
+        // live in a GPU transform-feedback buffer, not individually readable) so this scans a strip across
+        // the visible view -- like the forest/beach/urban ambience above -- and tests each column against the
+        // EXACT same condition the precipitation shader itself uses to decide whether hail spawns there
+        // (cloud + precipitation density above hailStormDensityThreshold), as the closest available proxy for
+        // "hail particles are actually present on screen". Muted entirely (volume 0) when no column qualifies.
+        const hailStormDensityThreshold = 2.0; // must match precipitationShader.vert's hailStormDensityThreshold
+
         let hailVolume = 0;
         let hailPan = 0;
         let hailHeavyMix = 0;
@@ -2071,21 +2075,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             let weightedVolume = 0;
             let weightedPos = 0;
             let totalWeight = 0;
+            let hailColumnsFound = 0;
 
             for (let i = 0; i < sampleWidth; i++) {
-              const localStormFactor = clamp(Math.pow(hailStripValues[i * 4 + 2] * 0.5, 0.5), 0, 1);
-              if (localStormFactor <= 0.001)
-                continue;
+              const stormDensity = hailStripValues[i * 4 + 1] + hailStripValues[i * 4 + 2]; // CLOUD + PRECIPITATION
+
+              if (stormDensity <= hailStormDensityThreshold)
+                continue; // this column does not meet the actual hail-spawning condition
+
+              hailColumnsFound++;
+
+              const columnStrength = clamp((stormDensity - hailStormDensityThreshold) / 4.0, 0, 1); // how far above threshold, proxy for "how much hail"
 
               const distFromCenter = Math.abs(i - sampleWidth_2) / sampleWidth_2; // 0 at screen center, 1 at the edge of the sampled view
               const proximityWeight = clamp(1.0 - distFromCenter, 0, 1);          // louder the closer it is to the center of view
 
-              weightedVolume += localStormFactor * proximityWeight;
-              weightedPos += (i - sampleWidth_2) * localStormFactor;
-              totalWeight += localStormFactor;
+              weightedVolume += columnStrength * proximityWeight;
+              weightedPos += (i - sampleWidth_2) * columnStrength;
+              totalWeight += columnStrength;
             }
 
-            if (weightedVolume > 0) { // hail-bearing precipitation found somewhere in view: otherwise stays silent
+            if (hailColumnsFound > 0 && weightedVolume > 0) { // hail actually detected somewhere in view: otherwise stays silent
               hailVolume = clamp(weightedVolume / sampleWidth_2, 0, 1) * hailIntensity * distVolumeMult;
               hailPan = clamp(weightedPos / (totalWeight * sampleWidth_2), -1, 1);
               hailHeavyMix = map_range_C(hailIntensity, 0.4, 0.8, 0.0, 1.0); // crossfade light -> heavy hail sample
