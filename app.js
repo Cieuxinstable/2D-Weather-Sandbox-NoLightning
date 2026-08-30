@@ -2052,24 +2052,48 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
 
-        // hail sound: crossfades from light to heavy hail as CAPE climbs above the hail threshold,
-        // scaled by local precipitation intensity (proxy for "how much hail is currently on screen")
+        // hail sound: scans a strip across the visible view (like the forest/beach/urban ambience above)
+        // so the sound is only heard when hail-bearing precipitation is actually within/near view, fading
+        // in as it gets closer to screen center and panning left/right towards where it actually is.
+        // Muted entirely (volume 0) when nothing is found in the sampled strip.
         let hailVolume = 0;
+        let hailPan = 0;
         let hailHeavyMix = 0;
 
         if (guiControls.hailEnabled) {
           const capeExcess = Math.max(guiControls.CAPE - guiControls.hailCapeThreshold, 0);
-          const hailIntensity = clamp(capeExcess / 2000, 0, 1); // 0 = no hail, 1 = extreme hail (2000+ J/kg above threshold)
+          const hailIntensity = clamp(capeExcess / 2000, 0, 1); // 0 = no hail-favorable storm, 1 = extreme (2000+ J/kg above threshold)
 
           if (hailIntensity > 0) {
-            const localStormFactor = clamp(Math.pow(waterTextureValues[2] * 0.5, 0.5), 0, 1);
+            var hailStripValues = new Float32Array(4 * sampleWidth);
+            gl.readPixels(simXpos - sampleWidth_2, justAboveSurfaceCellY, sampleWidth, 1, gl.RGBA, gl.FLOAT, hailStripValues);
 
-            hailVolume = hailIntensity * localStormFactor * distVolumeMult;
-            hailHeavyMix = map_range_C(hailIntensity, 0.4, 0.8, 0.0, 1.0); // crossfade light -> heavy hail sample
+            let weightedVolume = 0;
+            let weightedPos = 0;
+            let totalWeight = 0;
+
+            for (let i = 0; i < sampleWidth; i++) {
+              const localStormFactor = clamp(Math.pow(hailStripValues[i * 4 + 2] * 0.5, 0.5), 0, 1);
+              if (localStormFactor <= 0.001)
+                continue;
+
+              const distFromCenter = Math.abs(i - sampleWidth_2) / sampleWidth_2; // 0 at screen center, 1 at the edge of the sampled view
+              const proximityWeight = clamp(1.0 - distFromCenter, 0, 1);          // louder the closer it is to the center of view
+
+              weightedVolume += localStormFactor * proximityWeight;
+              weightedPos += (i - sampleWidth_2) * localStormFactor;
+              totalWeight += localStormFactor;
+            }
+
+            if (weightedVolume > 0) { // hail-bearing precipitation found somewhere in view: otherwise stays silent
+              hailVolume = clamp(weightedVolume / sampleWidth_2, 0, 1) * hailIntensity * distVolumeMult;
+              hailPan = clamp(weightedPos / (totalWeight * sampleWidth_2), -1, 1);
+              hailHeavyMix = map_range_C(hailIntensity, 0.4, 0.8, 0.0, 1.0); // crossfade light -> heavy hail sample
+            }
           }
         }
 
-        this.setHailSound(hailVolume, hailHeavyMix);
+        this.setHailSound(hailVolume, hailHeavyMix, hailPan);
 
         //    console.log(distVolumeMult, rainVolume, windVolume);
       }
@@ -2110,12 +2134,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       sound.pan.value = Number.isFinite(pan) ? pan : 0;
     }
 
-    // volume: overall loudness (0 = silent). heavyMix: 0 = pure light hail sample, 1 = pure heavy hail sample
-    setHailSound(volume, heavyMix)
+    // volume: overall loudness (0 = silent). heavyMix: 0 = pure light hail sample, 1 = pure heavy hail sample. pan: -1 (left) to 1 (right)
+    setHailSound(volume, heavyMix, pan = 0.0)
     {
       heavyMix = clamp(heavyMix, 0, 1);
-      this.setSoundGainAndPan(this.hail_light_sound, volume * (1.0 - heavyMix));
-      this.setSoundGainAndPan(this.hail_heavy_sound, volume * heavyMix);
+      this.setSoundGainAndPan(this.hail_light_sound, volume * (1.0 - heavyMix), pan);
+      this.setSoundGainAndPan(this.hail_heavy_sound, volume * heavyMix, pan);
     }
 
     mute()
@@ -6620,7 +6644,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       gl.bindVertexArray(fluidVao);
 
-      if (guiControls.showDrops) {
+      if (guiControls.showDrops || guiControls.hailEnabled) { // hail always renders as individual particles, regardless of the "show every drop" debug toggle
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         // draw drops over clouds
@@ -6628,6 +6652,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(precipDisplayProgram);
         gl.uniform2f(gl.getUniformLocation(precipDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
         gl.uniform3f(gl.getUniformLocation(precipDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform1f(gl.getUniformLocation(precipDisplayProgram, 'showAllDrops'), guiControls.showDrops ? 1.0 : 0.0);
         gl.bindVertexArray(destVAO);
         gl.drawArrays(gl.POINTS, 0, NUM_DROPLETS);
         gl.bindVertexArray(fluidVao); // set screenfilling rect again
