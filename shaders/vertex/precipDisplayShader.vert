@@ -36,12 +36,18 @@ void main()
     // 1 at max density (2.5) -- so the point also shrinks towards the small end as it melts, not just
     // scales with CAPE, giving a subtle "shrinking away" look as it nears the warm ground.
     float hailGrowth = clamp(density - 1.0, 0.0, 1.5) / 1.5;
-    size = mix(2.0, 5.0, hailGrowth); // diameter 2px (r=1px) -> 5px (r=2.5px): fine and discreet
+    size = mix(1.6, 5.0, hailGrowth); // diameter 1.6px (r=0.8px) -> 5px (r=2.5px) BEFORE the zoom-independent clamp below
   } else if (showAllDrops < 0.5) {
     size = 0.0; // outside debug mode, rain/snow are shown via the volumetric cloud/precip fog instead of individual points
   }
 
-  gl_PointSize = view[2] * size / aspectRatios[0];
+  float pointSizePx = view[2] * size / aspectRatios[0]; // scales with camera zoom like every other object in the scene
+
+  if (isHailParticle)
+    pointSizePx = clamp(pointSizePx, 1.6, 5.0); // absolute on-screen cap (diameter 1.6-5px, r=0.8-2.5px): hail must
+                                                 // never balloon into a giant disc just because the camera is zoomed in
+
+  gl_PointSize = pointSizePx;
 
   position_out = dropPosition;
   mass_out = mass;

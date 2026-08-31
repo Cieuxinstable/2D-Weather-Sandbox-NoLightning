@@ -2079,31 +2079,33 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
 
-        // hail sound: deliberately the exact same mechanism as rain above -- one single-point sample at
-        // the camera's center, one direct volume value, same distVolumeMult falloff, no separate panning
-        // or crossfade machinery -- so it behaves identically (no extra smoothing/timing to drift out of
-        // sync or stutter against it). Loudness simply follows the local storm density in view.
+        // hail sound: this is a straight duplicate of the rain sound code directly above it -- same
+        // single-point sample already read into waterTextureValues, same volume formula, same
+        // distVolumeMult falloff, same direct this.setSoundGainAndPan(...) call. The only differences
+        // are the gate (hail density, matching precipitationShader.vert's own spawn threshold instead of
+        // temperature) and picking one of the two hail samples instead of always using rain_sound.
         let hailVolume = 0;
-        let hailUseHeavy = false;
 
-        if (guiControls.hailEnabled) {
-          const capeExcess = Math.max(guiControls.CAPE - guiControls.hailCapeThreshold, 0);
-          const hailIntensity = clamp(capeExcess / 2000, 0, 1); // 0 = no hail-favorable storm, 1 = extreme (2000+ J/kg above threshold)
+        const hailDensity = guiControls.hailEnabled ? waterTextureValues[1] + waterTextureValues[2] : 0; // CLOUD + PRECIPITATION
 
-          if (hailIntensity > 0) {
-            const stormDensity = waterTextureValues[1] + waterTextureValues[2]; // CLOUD + PRECIPITATION, same as the shader's hail-spawn gate
+        if (hailDensity > 2.0) { // must match precipitationShader.vert's hailStormDensityThreshold: hail is actually spawning here
+          hailVolume = Math.pow(hailDensity * 0.5, 0.5); // identical formula shape to rainVolume above
 
-            if (stormDensity > 2.0) { // must match precipitationShader.vert's hailStormDensityThreshold
-              hailVolume = Math.pow(stormDensity * 0.5, 0.5) * hailIntensity; // same shape as the rain formula above
-              hailVolume *= distVolumeMult;
-              hailUseHeavy = hailIntensity > 0.6;
-            }
-          }
+          hailVolume *= distVolumeMult;
         }
 
-        this.setHailSound(hailVolume, hailUseHeavy);
+        const hailUseHeavy = guiControls.CAPE > guiControls.hailCapeThreshold + 1200; // extreme CAPE -> the heavier sample
 
-        //    console.log(distVolumeMult, rainVolume, windVolume);
+        this.setSoundGainAndPan(hailUseHeavy ? this.hail_heavy_sound : this.hail_light_sound, hailVolume);
+        this.setSoundGainAndPan(hailUseHeavy ? this.hail_light_sound : this.hail_heavy_sound, 0);
+
+        if ((hailVolume > 0.001) !== this.hailAudible) { // log only on silence <-> audible transitions
+          console.log(hailVolume > 0.001 ? `Lecture du son de grêle : ${hailVolume.toFixed(2)} (${hailUseHeavy ? 'hail_heavy.mp3' : 'hail_light.mp3'})`
+                                          : '[hail audio] no hail on screen -> muted');
+          this.hailAudible = hailVolume > 0.001;
+        }
+
+        //    console.log(distVolumeMult, rainVolume, windVolume, hailVolume);
       }
 
       if (airplaneMode) {
@@ -2142,26 +2144,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       sound.pan.value = Number.isFinite(pan) ? pan : 0;
     }
 
-    // Deliberately mirrors setSoundGainAndPan(this.rain_sound, rainVolume) above exactly: one direct
-    // gain assignment, no smoothing, no panning -- both hail loops were started once in the constructor
-    // and are never restarted here, only their gain moves. useHeavy simply picks which of the two loops
-    // is the active one; the other is silenced the same way, so only one hail sample is ever audible.
-    setHailSound(volume, useHeavy)
-    {
-      const isAudibleNow = volume > 0.001;
-      if (isAudibleNow !== this.hailAudible) { // log only on silence <-> audible transitions, not every frame
-        if (isAudibleNow) {
-          console.log('Lecture du son de grêle :', volume.toFixed(2), '(' + (useHeavy ? 'hail_heavy.mp3' : 'hail_light.mp3') + ')',
-                      '| light_sound loaded:', !!this.hail_light_sound, '| heavy_sound loaded:', !!this.hail_heavy_sound, '| AudioContext state:', this.audioCtx.state);
-        } else {
-          console.log('[hail audio] no hail on screen -> muted');
-        }
-        this.hailAudible = isAudibleNow;
-      }
-
-      this.setSoundGainAndPan(useHeavy ? this.hail_heavy_sound : this.hail_light_sound, volume);
-      this.setSoundGainAndPan(useHeavy ? this.hail_light_sound : this.hail_heavy_sound, 0);
-    }
 
     mute()
     {
