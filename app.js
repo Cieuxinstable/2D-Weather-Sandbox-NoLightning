@@ -2092,17 +2092,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         // hail sound: this is a straight duplicate of the rain sound code directly above it -- same
         // single-point sample already read into waterTextureValues, same volume formula, same
         // distVolumeMult falloff, same direct this.setSoundGainAndPan(...) call. The only differences
-        // are the gate (hail density, matching precipitationShader.vert's own spawn threshold instead of
+        // are the gate (CAPE, matching precipitationShader.vert's own spawn threshold instead of
         // temperature) and picking one of the two hail samples instead of always using rain_sound.
+        //
+        // Note: this reads PRECIPITATION only (not CLOUD) because the sample point is a few cells above
+        // the ground -- water[CLOUD] is essentially always ~0 that close to the surface (clouds don't
+        // reach the ground), so requiring CLOUD+PRECIPITATION to clear the in-cloud spawn threshold here
+        // was never actually reachable and silently muted the sound whenever hail was actually falling.
         let hailVolume = 0;
 
-        const hailDensity = guiControls.hailEnabled ? waterTextureValues[1] + waterTextureValues[2] : 0; // CLOUD + PRECIPITATION
+        const hailPrecipNearGround = guiControls.hailEnabled ? waterTextureValues[2] : 0; // PRECIPITATION falling near the camera
 
-        // Both conditions must match precipitationShader.vert's own hail-spawn gate exactly (density AND
-        // CAPE together, not just one): otherwise the sound could play over ordinary heavy rain that
-        // never actually produced any hail.
-        if (hailDensity > 3.5 && guiControls.CAPE > guiControls.hailCapeThreshold + 200) {
-          hailVolume = Math.pow(hailDensity * 0.5, 0.5); // identical formula shape to rainVolume above
+        if (guiControls.CAPE > guiControls.hailCapeThreshold + 200) { // same CAPE qualifying condition as hail spawning
+          hailVolume = Math.pow(hailPrecipNearGround * 0.5, 0.5); // identical formula shape to rainVolume above
 
           hailVolume *= distVolumeMult;
         }
