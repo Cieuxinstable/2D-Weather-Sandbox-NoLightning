@@ -244,8 +244,13 @@ vec4 getAirColor(vec2 fragCoordIn)
   float cloudBaseGate = 1.0 - smoothstep(0.1, 0.5, texCoord.y); // texCoord.y: 0 = ground, 1 = top of atmosphere
   float cloudBaseDarken = cloudMassActivity * cloudBaseGate;
 
+  // Severe storms (high CAPE + heavy precipitation) get a markedly darker, more brooding cumulonimbus
+  // base/core than an ordinary cloud, reflecting the sheer volume and intensity of the storm.
+  float stormSeverity = clamp((currentCAPE - hailCapeThreshold * 0.5) / 2000.0, 0.0, 1.0) * clamp(water[PRECIPITATION] / 2.0, 0.0, 1.0);
+  float baseDarkFactor = mix(0.55, 0.22, stormSeverity); // 0.55 = ordinary dense cloud, 0.22 = severe cumulonimbus
+
   vec3 cloudBaseTexture = texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.15).rgb;
-  cloudCol = mix(cloudCol, cloudCol * mix(vec3(1.0), cloudBaseTexture, 0.5) * 0.55, cloudBaseDarken);
+  cloudCol = mix(cloudCol, cloudCol * mix(vec3(1.0), cloudBaseTexture, 0.5) * baseDarkFactor, cloudBaseDarken);
 
   // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
@@ -266,15 +271,16 @@ vec4 getAirColor(vec2 fragCoordIn)
   float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);                                                     // alpha blending
   vec3 color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity); // color blending
 
-  // "Green thunderstorm" tint: applied only to the precipitation itself (not the general cloud mass),
-  // restricted to an extremely hyper-localized core -- only above 90% of a practical extreme-density
-  // reference -- so the vast majority of the rain/hail curtain keeps its normal color, and only in the
-  // upper/mid column -- fading out before reaching the ground so it never tints the surface/near-ground air.
+  // "Green thunderstorm" tint: never on the cloud itself -- only on extremely dense hail/precipitation
+  // sitting just BELOW the cloud base, in the gap between the cloud and the mid atmosphere. Requires
+  // local cloud water to be low (i.e. we are no longer inside the cloud) while precipitation right there
+  // is near its most extreme, and stays clear of both the cloud above and the ground below.
   const float precipCoreMaxRef = 5.0;                                                                  // practical reference for "extreme" local precipitation density
   float precipConcentration = smoothstep(precipCoreMaxRef * 0.90, precipCoreMaxRef * 0.98, water[PRECIPITATION]); // only above the 90% densest core
-  float altitudeGate = smoothstep(0.15, 0.35, texCoord.y);                         // texCoord.y: 0 = ground, 1 = top of atmosphere
+  float belowCloudGate = 1.0 - smoothstep(1.0, 3.0, cloudDensity);                 // only where we've left the cloud mass behind
+  float midAltitudeBand = smoothstep(0.15, 0.30, texCoord.y) * (1.0 - smoothstep(0.55, 0.75, texCoord.y)); // a band: not near the ground, not high in the cloud
   float capeGate = clamp((currentCAPE - hailCapeThreshold) / 1500.0, 0.0, 1.0) * hailEnabled;
-  float greenStormVisual = precipConcentration * altitudeGate * capeGate;
+  float greenStormVisual = precipConcentration * belowCloudGate * midAltitudeBand * capeGate;
 
   const vec3 greenBlueStormTint = vec3(0.55, 0.9, 0.85);
   color = mix(color, color * greenBlueStormTint, greenStormVisual * 0.6);
