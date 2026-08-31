@@ -127,7 +127,14 @@ void main()
           const float hailStormDensityThreshold = 3.5; // minimum cloud+precip density: only very heavy precipitation qualifies
           float stormDensity = water[CLOUD] + water[PRECIPITATION];
           float capeExcess = max(currentCAPE - hailCapeThreshold - 200.0, 0.0); // small buffer past the threshold before any hail can occur at all
-          float hailChance = clamp(capeExcess / 3000.0, 0.0, 1.0); // higher CAPE above the threshold -> hail forms more often
+
+          // Concentrate hail into narrow "swaths" at the most intense convective cores instead of spawning
+          // it uniformly anywhere the storm merely clears the threshold: a column barely above threshold
+          // gets almost no chance, while the true density core (well above threshold) spawns reliably.
+          float densityCoreFactor = clamp((stormDensity - hailStormDensityThreshold) / 2.0, 0.0, 1.0);
+          float coreConcentration = densityCoreFactor * densityCoreFactor * densityCoreFactor; // steep falloff outside the core
+
+          float hailChance = clamp(capeExcess / 3000.0, 0.0, 1.0) * coreConcentration; // higher CAPE above the threshold -> hail forms more often
 
           if (hailEnabled > 0.5 && stormDensity > hailStormDensityThreshold &&
               random2d(vec2(texCoord.x * 91.7, texCoord.y * 133.1 + iterNum * 0.013)) < hailChance) { // Spawn hail instead of snow
@@ -286,7 +293,10 @@ void main()
 
       // Update position
       // move with air    * 2. because droplet position goes from -1. to 1
-      newPos += base.xy / resolution * 2.;
+      vec2 airDrift = base.xy / resolution * 2.0;
+      if (isHail)
+        airDrift.x *= 0.4; // dense hail resists horizontal wind drift far more than light rain/snow, keeping the swath tight as it falls
+      newPos += airDrift;
       float fallSpeedMult = newDensity * (isHail ? 1.5 : 1.0); // hail falls noticeably faster than dense rain/wet snow of the same density
       newPos.y -= fallSpeed * fallSpeedMult * sqrt(totalMass / surfaceArea); // fall speed relative to air
       /*

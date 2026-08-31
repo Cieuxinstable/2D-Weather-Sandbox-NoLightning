@@ -2100,6 +2100,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         // reach the ground), so requiring CLOUD+PRECIPITATION to clear the in-cloud spawn threshold here
         // was never actually reachable and silently muted the sound whenever hail was actually falling.
         let hailVolume = 0;
+        let hailPan = 0;
 
         const hailPrecipNearGround = guiControls.hailEnabled ? waterTextureValues[2] : 0; // PRECIPITATION falling near the camera
 
@@ -2107,11 +2108,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           hailVolume = Math.pow(hailPrecipNearGround * 0.5, 0.5); // identical formula shape to rainVolume above
 
           hailVolume *= distVolumeMult;
+
+          // The hail swath is now spatially concentrated (see precipitationShader.vert), so unlike rain
+          // it is worth locating and panning towards: scan the same visible strip used for the ambience
+          // sounds above for where the near-ground precipitation is actually concentrated, and pan there.
+          var hailStripValues = new Float32Array(4 * sampleWidth);
+          gl.readPixels(simXpos - sampleWidth_2, justAboveSurfaceCellY, sampleWidth, 1, gl.RGBA, gl.FLOAT, hailStripValues);
+
+          let weightedPos = 0;
+          let totalWeight = 0;
+          for (let i = 0; i < sampleWidth; i++) {
+            const w = hailStripValues[i * 4 + 2]; // PRECIPITATION
+            weightedPos += (i - sampleWidth_2) * w;
+            totalWeight += w;
+          }
+          if (totalWeight > 0.01)
+            hailPan = clamp(weightedPos / (totalWeight * sampleWidth_2), -1, 1);
         }
 
         const hailUseHeavy = guiControls.CAPE > guiControls.hailCapeThreshold + 1200; // extreme CAPE -> the heavier sample
 
-        this.setSoundGainAndPan(hailUseHeavy ? this.hail_heavy_sound : this.hail_light_sound, hailVolume);
+        this.setSoundGainAndPan(hailUseHeavy ? this.hail_heavy_sound : this.hail_light_sound, hailVolume, hailPan);
         this.setSoundGainAndPan(hailUseHeavy ? this.hail_light_sound : this.hail_heavy_sound, 0);
 
         if ((hailVolume > 0.001) !== this.hailAudible) { // log only on silence <-> audible transitions
