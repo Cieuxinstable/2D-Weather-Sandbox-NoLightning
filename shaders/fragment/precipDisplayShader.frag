@@ -4,6 +4,7 @@ precision highp float;
 in vec2 position_out;
 in vec2 mass_out;
 in float density_out;
+in float cloudAmount_out;
 
 uniform float showAllDrops; // 1.0 = debug: render every droplet (rain/snow/hail). 0.0 = normal play: only hail is drawn as a particle
 
@@ -41,7 +42,12 @@ void main()
     float hailOpacity = debugView ? clamp(opacity * 3.0 + 0.35, 0.0, 1.0) : clamp(opacity * 1.5 + 0.18, 0.0, 0.75);
     // Red is reserved for the "Show Droplets" debug overlay; in normal play hail is a light, slightly translucent grey.
     vec3 hailColor = debugView ? vec3(1.0, 0.1, 0.1) : vec3(0.85);
-    fragmentColor = vec4(hailColor, hailOpacity);
+
+    // Hide hail while it is still inside the cloud base (barely visible, not fully gone) so it only
+    // reads as a "curtain" once it actually emerges below the cloud and is falling through clear air.
+    float cloudMask = debugView ? 1.0 : mix(1.0, 0.05, smoothstep(0.3, 1.5, cloudAmount_out));
+
+    fragmentColor = vec4(hailColor, hailOpacity * cloudMask);
   } else if (mass_out[ICE] > 0.) {              // has ice, not hail
     if (mass_out[WATER] == 0.)                  // pure light ice, no liquid water
       fragmentColor = vec4(1.0, 1.0, 1.0, opacity); // snow, white

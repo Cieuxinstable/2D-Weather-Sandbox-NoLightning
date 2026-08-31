@@ -1921,9 +1921,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     async loadSound(url)
     {
-      const resp = await fetch('resources/sounds/' + url);
+      const path = 'resources/sounds/' + url;
+      const resp = await fetch(path);
+
+      if (!resp.ok) // fetch() only rejects on network failure, not on 404/500 -- check the status explicitly
+        throw new Error(`HTTP ${resp.status} ${resp.statusText} fetching ${path}`);
+
       const arrayBuffer = await resp.arrayBuffer();
-      return await this.audioCtx.decodeAudioData(arrayBuffer);
+
+      try {
+        return await this.audioCtx.decodeAudioData(arrayBuffer);
+      } catch (decodeErr) {
+        throw new Error(`decodeAudioData failed for ${path}: ${decodeErr.message || decodeErr}`);
+      }
     }
 
     async loadThunderSounds(name, num)
@@ -6712,6 +6722,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform2f(gl.getUniformLocation(precipDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
         gl.uniform3f(gl.getUniformLocation(precipDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
         gl.uniform1f(gl.getUniformLocation(precipDisplayProgram, 'showAllDrops'), guiControls.showDrops ? 1.0 : 0.0);
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, waterTexture_1); // read here so hail can fade/shrink while still inside the cloud
+        gl.uniform1i(gl.getUniformLocation(precipDisplayProgram, 'waterTex'), 3);
         gl.bindVertexArray(destVAO);
         gl.drawArrays(gl.POINTS, 0, NUM_DROPLETS);
         gl.bindVertexArray(fluidVao); // set screenfilling rect again

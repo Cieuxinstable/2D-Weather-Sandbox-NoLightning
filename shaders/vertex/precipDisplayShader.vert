@@ -8,11 +8,13 @@ in float density;
 out vec2 position_out;
 out vec2 mass_out;
 out float density_out;
+out float cloudAmount_out; // how deep inside the cloud layer this hail particle currently is
 
 uniform vec2 texelSize;
 uniform vec2 aspectRatios;  // sim   canvas
 uniform vec3 view;          // Xpos  Ypos    Zoom
 uniform float showAllDrops; // 1.0 = debug: render every droplet (rain/snow/hail). 0.0 = normal play: only hail is drawn as a particle
+uniform sampler2D waterTex; // sampled only for hail, to fade/shrink it while still inside the cloud
 
 void main()
 {
@@ -30,13 +32,19 @@ void main()
   bool isHailParticle = mass[1] > 0. && density >= 1.0; // pure/partly-melted dense ice, classified the same way the fragment shader colors it
 
   float size = 4.0; // 4.0
+  cloudAmount_out = 0.0;
 
   if (isHailParticle) {
     // hailGrowth: 0 right at the CAPE threshold or once nearly melted back to rain density (1.0),
     // 1 at max density (2.5) -- so the point also shrinks towards the small end as it melts, not just
     // scales with CAPE, giving a subtle "shrinking away" look as it nears the warm ground.
     float hailGrowth = clamp(density - 1.0, 0.0, 1.5) / 1.5;
-    size = mix(1.6, 5.0, hailGrowth); // diameter 1.6px (r=0.8px) -> 5px (r=2.5px) BEFORE the zoom-independent clamp below
+    size = mix(0.6, 5.0, hailGrowth); // diameter 0.6px (r=0.3px) for the thin "curtain" hail -> 5px (r=2.5px) for big hail, unchanged
+
+    // dropPosition is already in the simulation's own -1..1 space (untouched by camera pan/zoom), so it
+    // maps directly to a 0..1 texture UV without needing the view/aspect transform used for gl_Position.
+    vec2 waterUV = dropPosition * 0.5 + 0.5;
+    cloudAmount_out = texture(waterTex, waterUV).y; // CLOUD channel
   } else if (showAllDrops < 0.5) {
     size = 0.0; // outside debug mode, rain/snow are shown via the volumetric cloud/precip fog instead of individual points
   }
@@ -44,7 +52,7 @@ void main()
   float pointSizePx = view[2] * size / aspectRatios[0]; // scales with camera zoom like every other object in the scene
 
   if (isHailParticle)
-    pointSizePx = clamp(pointSizePx, 1.6, 5.0); // absolute on-screen cap (diameter 1.6-5px, r=0.8-2.5px): hail must
+    pointSizePx = clamp(pointSizePx, 0.6, 5.0); // absolute on-screen cap (diameter 0.6-5px, r=0.3-2.5px): hail must
                                                  // never balloon into a giant disc just because the camera is zoomed in
 
   gl_PointSize = pointSizePx;
