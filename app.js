@@ -1873,10 +1873,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     wind_sound;
     hail_light_sound;
     hail_heavy_sound;
-    hailAudible = false;       // tracks whether hail sound is currently playing, so we only log on state changes
-    hailVolumeSmoothed = 0;    // lerped towards the target volume each frame instead of snapping (avoids clicks/zipper noise)
-    hailHeavyMixSmoothed = 0;
-    hailPanSmoothed = 0;
+    hailAudible = false; // tracks whether hail sound is currently playing, so we only log on state changes
 
 
     constructor()
@@ -2082,59 +2079,29 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
 
-        // hail sound: there is no per-particle "is this a hail particle" query available from JS (particles
-        // live in a GPU transform-feedback buffer, not individually readable) so this scans a strip across
-        // the visible view -- like the forest/beach/urban ambience above -- and tests each column against the
-        // EXACT same condition the precipitation shader itself uses to decide whether hail spawns there
-        // (cloud + precipitation density above hailStormDensityThreshold), as the closest available proxy for
-        // "hail particles are actually present on screen". Muted entirely (volume 0) when no column qualifies.
-        const hailStormDensityThreshold = 2.0; // must match precipitationShader.vert's hailStormDensityThreshold
-
+        // hail sound: deliberately the exact same mechanism as rain above -- one single-point sample at
+        // the camera's center, one direct volume value, same distVolumeMult falloff, no separate panning
+        // or crossfade machinery -- so it behaves identically (no extra smoothing/timing to drift out of
+        // sync or stutter against it). Loudness simply follows the local storm density in view.
         let hailVolume = 0;
-        let hailPan = 0;
-        let hailHeavyMix = 0;
+        let hailUseHeavy = false;
 
         if (guiControls.hailEnabled) {
           const capeExcess = Math.max(guiControls.CAPE - guiControls.hailCapeThreshold, 0);
           const hailIntensity = clamp(capeExcess / 2000, 0, 1); // 0 = no hail-favorable storm, 1 = extreme (2000+ J/kg above threshold)
 
           if (hailIntensity > 0) {
-            var hailStripValues = new Float32Array(4 * sampleWidth);
-            gl.readPixels(simXpos - sampleWidth_2, justAboveSurfaceCellY, sampleWidth, 1, gl.RGBA, gl.FLOAT, hailStripValues);
+            const stormDensity = waterTextureValues[1] + waterTextureValues[2]; // CLOUD + PRECIPITATION, same as the shader's hail-spawn gate
 
-            let weightedVolume = 0;
-            let weightedPos = 0;
-            let totalWeight = 0;
-            let hailColumnsFound = 0;
-
-            for (let i = 0; i < sampleWidth; i++) {
-              const stormDensity = hailStripValues[i * 4 + 1] + hailStripValues[i * 4 + 2]; // CLOUD + PRECIPITATION
-
-              if (stormDensity <= hailStormDensityThreshold)
-                continue; // this column does not meet the actual hail-spawning condition
-
-              hailColumnsFound++;
-
-              const columnStrength = clamp((stormDensity - hailStormDensityThreshold) / 4.0, 0, 1); // how far above threshold, proxy for "how much hail"
-
-              const distFromCenter = Math.abs(i - sampleWidth_2) / sampleWidth_2; // 0 at screen center, 1 at the edge of the sampled view
-              const proximityWeight = clamp(1.0 - distFromCenter, 0, 1);          // louder the closer it is to the center of view
-
-              weightedVolume += columnStrength * proximityWeight;
-              weightedPos += (i - sampleWidth_2) * columnStrength;
-              totalWeight += columnStrength;
-            }
-
-            if (hailColumnsFound > 0 && weightedVolume > 0) { // hail actually detected somewhere in view: otherwise stays silent
-              hailVolume = clamp(weightedVolume / sampleWidth_2, 0, 1) * hailIntensity * distVolumeMult;
-              hailVolume = Math.max(hailVolume, 0.15);        // force an audible test floor as soon as hail is detected on screen
-              hailPan = clamp(weightedPos / (totalWeight * sampleWidth_2), -1, 1);
-              hailHeavyMix = map_range_C(hailIntensity, 0.4, 0.8, 0.0, 1.0); // crossfade light -> heavy hail sample
+            if (stormDensity > 2.0) { // must match precipitationShader.vert's hailStormDensityThreshold
+              hailVolume = Math.pow(stormDensity * 0.5, 0.5) * hailIntensity; // same shape as the rain formula above
+              hailVolume *= distVolumeMult;
+              hailUseHeavy = hailIntensity > 0.6;
             }
           }
         }
 
-        this.setHailSound(hailVolume, hailHeavyMix, hailPan);
+        this.setHailSound(hailVolume, hailUseHeavy);
 
         //    console.log(distVolumeMult, rainVolume, windVolume);
       }
@@ -2175,40 +2142,25 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       sound.pan.value = Number.isFinite(pan) ? pan : 0;
     }
 
-    // targetVolume: overall loudness (0 = silent). targetHeavyMix: 0 = pure light hail sample, 1 = pure heavy hail
-    // sample. targetPan: -1 (left) to 1 (right). The hail loops are started once (in the constructor) and never
-    // stopped/restarted here -- only their gain is smoothly ramped every frame, so there is no per-frame
-    // re-instantiation or replay, and no hard on/off click. Rising volume (attack) reacts quickly; falling
-    // volume (release) fades out gradually, settling fully to silence rather than being cut abruptly.
-    setHailSound(targetVolume, targetHeavyMix, targetPan = 0.0)
+    // Deliberately mirrors setSoundGainAndPan(this.rain_sound, rainVolume) above exactly: one direct
+    // gain assignment, no smoothing, no panning -- both hail loops were started once in the constructor
+    // and are never restarted here, only their gain moves. useHeavy simply picks which of the two loops
+    // is the active one; the other is silenced the same way, so only one hail sample is ever audible.
+    setHailSound(volume, useHeavy)
     {
-      targetHeavyMix = clamp(targetHeavyMix, 0, 1);
-
-      const attackRate = 0.15;
-      const releaseRate = 0.04;
-      const rate = targetVolume > this.hailVolumeSmoothed ? attackRate : releaseRate;
-
-      this.hailVolumeSmoothed += (targetVolume - this.hailVolumeSmoothed) * rate;
-      this.hailHeavyMixSmoothed += (targetHeavyMix - this.hailHeavyMixSmoothed) * 0.1;
-      this.hailPanSmoothed += (targetPan - this.hailPanSmoothed) * 0.1;
-
-      if (this.hailVolumeSmoothed < 0.001)
-        this.hailVolumeSmoothed = 0; // fully settle to true silence instead of trailing forever
-
-      const isAudibleNow = this.hailVolumeSmoothed > 0.001;
+      const isAudibleNow = volume > 0.001;
       if (isAudibleNow !== this.hailAudible) { // log only on silence <-> audible transitions, not every frame
         if (isAudibleNow) {
-          console.log('Lecture du son de grêle :', this.hailVolumeSmoothed.toFixed(2),
-                      '(' + (this.hailHeavyMixSmoothed > 0.5 ? 'hail_heavy.mp3' : 'hail_light.mp3') + ', pan:', this.hailPanSmoothed.toFixed(2) + ')',
+          console.log('Lecture du son de grêle :', volume.toFixed(2), '(' + (useHeavy ? 'hail_heavy.mp3' : 'hail_light.mp3') + ')',
                       '| light_sound loaded:', !!this.hail_light_sound, '| heavy_sound loaded:', !!this.hail_heavy_sound, '| AudioContext state:', this.audioCtx.state);
         } else {
-          console.log('[hail audio] no hail on screen -> muted (faded out)');
+          console.log('[hail audio] no hail on screen -> muted');
         }
         this.hailAudible = isAudibleNow;
       }
 
-      this.setSoundGainAndPan(this.hail_light_sound, this.hailVolumeSmoothed * (1.0 - this.hailHeavyMixSmoothed), this.hailPanSmoothed);
-      this.setSoundGainAndPan(this.hail_heavy_sound, this.hailVolumeSmoothed * this.hailHeavyMixSmoothed, this.hailPanSmoothed);
+      this.setSoundGainAndPan(useHeavy ? this.hail_heavy_sound : this.hail_light_sound, volume);
+      this.setSoundGainAndPan(useHeavy ? this.hail_light_sound : this.hail_heavy_sound, 0);
     }
 
     mute()
@@ -2220,7 +2172,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.setSoundGainAndPan(this.wind_sound, 0);
       this.setSoundGainAndPan(this.hail_light_sound, 0);
       this.setSoundGainAndPan(this.hail_heavy_sound, 0);
-      this.hailVolumeSmoothed = 0; // keep the smoothing state in sync with the instant mute
       this.hailAudible = false;
       this.jetEngineSound.mute();
     }

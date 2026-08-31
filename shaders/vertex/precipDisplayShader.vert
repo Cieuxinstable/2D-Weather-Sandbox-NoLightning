@@ -32,8 +32,11 @@ void main()
   float size = 4.0; // 4.0
 
   if (isHailParticle) {
-    float hailGrowth = clamp(density - 1.0, 0.0, 1.5) / 1.5;         // 0 at the CAPE threshold, 1 at max density (2.5)
-    size = mix(3.0, 8.0, hailGrowth);                                // diameter 3px (r=1.5px) -> 8px (r=4px), scaled by CAPE
+    // hailGrowth: 0 right at the CAPE threshold or once nearly melted back to rain density (1.0),
+    // 1 at max density (2.5) -- so the point also shrinks towards the small end as it melts, not just
+    // scales with CAPE, giving a subtle "shrinking away" look as it nears the warm ground.
+    float hailGrowth = clamp(density - 1.0, 0.0, 1.5) / 1.5;
+    size = mix(2.0, 5.0, hailGrowth); // diameter 2px (r=1px) -> 5px (r=2.5px): fine and discreet
   } else if (showAllDrops < 0.5) {
     size = 0.0; // outside debug mode, rain/snow are shown via the volumetric cloud/precip fog instead of individual points
   }
