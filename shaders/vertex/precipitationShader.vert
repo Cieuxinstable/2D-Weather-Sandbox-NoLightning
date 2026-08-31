@@ -138,7 +138,7 @@ void main()
 
           if (hailEnabled > 0.5 && stormDensity > hailStormDensityThreshold &&
               random2d(vec2(texCoord.x * 91.7, texCoord.y * 133.1 + iterNum * 0.013)) < hailChance) { // Spawn hail instead of snow
-            newMass[ICE] = initalMass + min(capeExcess * 0.0002, 1.5); // higher CAPE -> bigger hailstones
+            newMass[ICE] = initalMass * 0.5 + min(capeExcess * 0.0002, 1.5); // starts as a small embryo -- grows while riding the updraft below
             newDensity = min(1.0 + capeExcess * 0.0006, 2.5);          // higher CAPE -> denser, faster-falling hail
           }
 
@@ -293,12 +293,26 @@ void main()
 
       // Update position
       // move with air    * 2. because droplet position goes from -1. to 1
+      const float criticalHailMass = 0.5; // once hail reaches this ice mass, it is too heavy for the updraft to keep supporting
+
       vec2 airDrift = base.xy / resolution * 2.0;
-      if (isHail)
-        airDrift.x *= 0.4; // dense hail resists horizontal wind drift far more than light rain/snow, keeping the swath tight as it falls
-      newPos += airDrift;
-      float fallSpeedMult = newDensity * (isHail ? 1.5 : 1.0); // hail falls noticeably faster than dense rain/wet snow of the same density
-      newPos.y -= fallSpeed * fallSpeedMult * sqrt(totalMass / surfaceArea); // fall speed relative to air
+
+      if (isHail && newMass[ICE] < criticalHailMass) {
+        // Young hail embryo: still light enough to be carried by the storm's updraft, so it rides/circulates
+        // with the vertical air motion (rising back up inside the convective column) instead of falling,
+        // growing as it goes -- fall is almost fully suppressed while it stays this light.
+        airDrift.y *= 2.2;
+        newPos += airDrift;
+        newPos.y -= fallSpeed * newDensity * sqrt(totalMass / surfaceArea) * 0.1;
+      } else {
+        if (isHail)
+          airDrift.x *= 0.4; // dense mature hail resists horizontal wind drift far more than light rain/snow, keeping the swath tight
+        newPos += airDrift;
+        // Mature hail (just reached critical mass, or fell out of the updraft) drops suddenly and hard --
+        // a sharp, massive, localized fall rather than a gradual descent.
+        float fallSpeedMult = newDensity * (isHail ? 4.0 : 1.0);
+        newPos.y -= fallSpeed * fallSpeedMult * sqrt(totalMass / surfaceArea); // fall speed relative to air
+      }
       /*
        // falling at fixed speed:
       float cellHeight = texelSize.y * 12000.0; // in meters

@@ -2124,6 +2124,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           }
           if (totalWeight > 0.01)
             hailPan = clamp(weightedPos / (totalWeight * sampleWidth_2), -1, 1);
+
+          // The swath is narrow now, so being right under it vs. just off to the side should matter a
+          // lot: sharply cut the volume the further the swath's center sits from the middle of the view.
+          hailVolume *= Math.pow(1.0 - Math.abs(hailPan), 3.0);
         }
 
         const hailUseHeavy = guiControls.CAPE > guiControls.hailCapeThreshold + 1200; // extreme CAPE -> the heavier sample
