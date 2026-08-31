@@ -33,7 +33,7 @@ void main()
 
   if (isHailParticle) {
     float hailGrowth = clamp(density - 1.0, 0.0, 1.5) / 1.5;         // 0 at the CAPE threshold, 1 at max density (2.5)
-    size = mix(6.0, 20.0, hailGrowth);                               // diameter 6px (r=3px) -> 20px (r=10px), scaled by CAPE
+    size = mix(3.0, 8.0, hailGrowth);                                // diameter 3px (r=1.5px) -> 8px (r=4px), scaled by CAPE
   } else if (showAllDrops < 0.5) {
     size = 0.0; // outside debug mode, rain/snow are shown via the volumetric cloud/precip fog instead of individual points
   }

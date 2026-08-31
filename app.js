@@ -1873,7 +1873,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     wind_sound;
     hail_light_sound;
     hail_heavy_sound;
-    hailAudible = false; // tracks whether hail sound is currently playing, so we only log on state changes
+    hailAudible = false;       // tracks whether hail sound is currently playing, so we only log on state changes
+    hailVolumeSmoothed = 0;    // lerped towards the target volume each frame instead of snapping (avoids clicks/zipper noise)
+    hailHeavyMixSmoothed = 0;
+    hailPanSmoothed = 0;
 
 
     constructor()
@@ -2172,24 +2175,40 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       sound.pan.value = Number.isFinite(pan) ? pan : 0;
     }
 
-    // volume: overall loudness (0 = silent). heavyMix: 0 = pure light hail sample, 1 = pure heavy hail sample. pan: -1 (left) to 1 (right)
-    setHailSound(volume, heavyMix, pan = 0.0)
+    // targetVolume: overall loudness (0 = silent). targetHeavyMix: 0 = pure light hail sample, 1 = pure heavy hail
+    // sample. targetPan: -1 (left) to 1 (right). The hail loops are started once (in the constructor) and never
+    // stopped/restarted here -- only their gain is smoothly ramped every frame, so there is no per-frame
+    // re-instantiation or replay, and no hard on/off click. Rising volume (attack) reacts quickly; falling
+    // volume (release) fades out gradually, settling fully to silence rather than being cut abruptly.
+    setHailSound(targetVolume, targetHeavyMix, targetPan = 0.0)
     {
-      heavyMix = clamp(heavyMix, 0, 1);
+      targetHeavyMix = clamp(targetHeavyMix, 0, 1);
 
-      const isAudibleNow = volume > 0.001;
+      const attackRate = 0.15;
+      const releaseRate = 0.04;
+      const rate = targetVolume > this.hailVolumeSmoothed ? attackRate : releaseRate;
+
+      this.hailVolumeSmoothed += (targetVolume - this.hailVolumeSmoothed) * rate;
+      this.hailHeavyMixSmoothed += (targetHeavyMix - this.hailHeavyMixSmoothed) * 0.1;
+      this.hailPanSmoothed += (targetPan - this.hailPanSmoothed) * 0.1;
+
+      if (this.hailVolumeSmoothed < 0.001)
+        this.hailVolumeSmoothed = 0; // fully settle to true silence instead of trailing forever
+
+      const isAudibleNow = this.hailVolumeSmoothed > 0.001;
       if (isAudibleNow !== this.hailAudible) { // log only on silence <-> audible transitions, not every frame
         if (isAudibleNow) {
-          console.log('Lecture du son de grêle :', volume.toFixed(2), '(' + (heavyMix > 0.5 ? 'hail_heavy.mp3' : 'hail_light.mp3') + ', pan:', pan.toFixed(2) + ')',
+          console.log('Lecture du son de grêle :', this.hailVolumeSmoothed.toFixed(2),
+                      '(' + (this.hailHeavyMixSmoothed > 0.5 ? 'hail_heavy.mp3' : 'hail_light.mp3') + ', pan:', this.hailPanSmoothed.toFixed(2) + ')',
                       '| light_sound loaded:', !!this.hail_light_sound, '| heavy_sound loaded:', !!this.hail_heavy_sound, '| AudioContext state:', this.audioCtx.state);
         } else {
-          console.log('[hail audio] no hail on screen -> muted');
+          console.log('[hail audio] no hail on screen -> muted (faded out)');
         }
         this.hailAudible = isAudibleNow;
       }
 
-      this.setSoundGainAndPan(this.hail_light_sound, volume * (1.0 - heavyMix), pan);
-      this.setSoundGainAndPan(this.hail_heavy_sound, volume * heavyMix, pan);
+      this.setSoundGainAndPan(this.hail_light_sound, this.hailVolumeSmoothed * (1.0 - this.hailHeavyMixSmoothed), this.hailPanSmoothed);
+      this.setSoundGainAndPan(this.hail_heavy_sound, this.hailVolumeSmoothed * this.hailHeavyMixSmoothed, this.hailPanSmoothed);
     }
 
     mute()
@@ -2201,6 +2220,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.setSoundGainAndPan(this.wind_sound, 0);
       this.setSoundGainAndPan(this.hail_light_sound, 0);
       this.setSoundGainAndPan(this.hail_heavy_sound, 0);
+      this.hailVolumeSmoothed = 0; // keep the smoothing state in sync with the instant mute
+      this.hailAudible = false;
       this.jetEngineSound.mute();
     }
   }

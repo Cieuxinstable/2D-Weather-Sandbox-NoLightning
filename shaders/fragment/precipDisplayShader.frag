@@ -33,10 +33,12 @@ void main()
 
   float opacity = (mass_out[WATER] + mass_out[ICE]) * 0.10;
 
-  if (isHailParticle) {                        // hail: classified by density alone, so it STAYS red while gradually
+  if (isHailParticle) {                        // hail: classified by density alone, so it STAYS this color while gradually
                                                 // melting instead of vanishing the instant any meltwater appears
     float hailOpacity = clamp(opacity * 3.0 + 0.35, 0.0, 1.0); // strong minimum visibility regardless of mass
-    fragmentColor = vec4(1.0, 0.1, 0.1, hailOpacity);          // bright red
+    // Red is reserved for the "Show Droplets" debug overlay; in normal play hail renders white like real hail/snow.
+    vec3 hailColor = showAllDrops >= 0.5 ? vec3(1.0, 0.1, 0.1) : vec3(1.0);
+    fragmentColor = vec4(hailColor, hailOpacity);
   } else if (mass_out[ICE] > 0.) {              // has ice, not hail
     if (mass_out[WATER] == 0.)                  // pure light ice, no liquid water
       fragmentColor = vec4(1.0, 1.0, 1.0, opacity); // snow, white
