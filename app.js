@@ -6602,9 +6602,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform4f(gl.getUniformLocation(realisticDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
       gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'Xmult'), horizontalDisplayMult);
       gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'iterNum'), iterNum);
-      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'currentCAPE'), guiControls.CAPE);
-      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'hailCapeThreshold'), guiControls.hailCapeThreshold);
-      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'hailEnabled'), guiControls.hailEnabled ? 1.0 : 0.0);
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {

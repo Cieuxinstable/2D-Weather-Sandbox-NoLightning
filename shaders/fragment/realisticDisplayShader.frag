@@ -51,10 +51,6 @@ uniform float displayVectorField;
 
 uniform float iterNum;
 
-uniform float currentCAPE;       // most recent CAPE reading (J/kg), drives the "green sky" severe-hailstorm tint
-uniform float hailCapeThreshold; // CAPE above which storms start producing hail
-uniform float hailEnabled;       // 1.0 = hail (and its green-sky visual) allowed, 0.0 = disabled
-
 out vec4 fragmentColor;
 
 #include "common.glsl"
@@ -229,28 +225,10 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0)); // 0.10 white to black
 
-  // Stronger overall contrast: pushes the denser/darker parts of the cloud mass darker while keeping
-  // its brightest, thinnest edges light, so cloud volumes read more clearly.
-  cloudCol = pow(cloudCol, vec3(1.6));
-
   float cloudDensity = max(cloudwater * 13.6, 0.0);
 
   float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8; // visualize precipitation
 
-  // Layer distinction: a dense cloud's underside/core is characteristically darker and more turbulent-
-  // looking than its thinner, brighter upper body -- this is purely about the CLOUD mass (cloudDensity),
-  // never about falling precipitation, so rain/hail below the cloud base keep their normal look untouched.
-  float cloudMassActivity = clamp(cloudDensity / 3.0, 0.0, 1.0);
-  float cloudBaseGate = 1.0 - smoothstep(0.1, 0.5, texCoord.y); // texCoord.y: 0 = ground, 1 = top of atmosphere
-  float cloudBaseDarken = cloudMassActivity * cloudBaseGate;
-
-  // Severe storms (high CAPE + heavy precipitation) get a markedly darker, more brooding cumulonimbus
-  // base/core than an ordinary cloud, reflecting the sheer volume and intensity of the storm.
-  float stormSeverity = clamp((currentCAPE - hailCapeThreshold * 0.5) / 2000.0, 0.0, 1.0) * clamp(water[PRECIPITATION] / 2.0, 0.0, 1.0);
-  float baseDarkFactor = mix(0.55, 0.22, stormSeverity); // 0.55 = ordinary dense cloud, 0.22 = severe cumulonimbus
-
-  vec3 cloudBaseTexture = texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.15).rgb;
-  cloudCol = mix(cloudCol, cloudCol * mix(vec3(1.0), cloudBaseTexture, 0.5) * baseDarkFactor, cloudBaseDarken);
 
   // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
@@ -270,20 +248,6 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);                                                     // alpha blending
   vec3 color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity); // color blending
-
-  // "Green thunderstorm" tint: never on the cloud itself -- only on extremely dense hail/precipitation
-  // sitting just BELOW the cloud base, in the gap between the cloud and the mid atmosphere. Requires
-  // local cloud water to be low (i.e. we are no longer inside the cloud) while precipitation right there
-  // is near its most extreme, and stays clear of both the cloud above and the ground below.
-  const float precipCoreMaxRef = 5.0;                                                                  // practical reference for "extreme" local precipitation density
-  float precipConcentration = smoothstep(precipCoreMaxRef * 0.90, precipCoreMaxRef * 0.98, water[PRECIPITATION]); // only above the 90% densest core
-  float belowCloudGate = 1.0 - smoothstep(1.0, 3.0, cloudDensity);                 // only where we've left the cloud mass behind
-  float midAltitudeBand = smoothstep(0.15, 0.30, texCoord.y) * (1.0 - smoothstep(0.55, 0.75, texCoord.y)); // a band: not near the ground, not high in the cloud
-  float capeGate = clamp((currentCAPE - hailCapeThreshold) / 1500.0, 0.0, 1.0) * hailEnabled;
-  float greenStormVisual = precipConcentration * belowCloudGate * midAltitudeBand * capeGate;
-
-  const vec3 greenBlueStormTint = vec3(0.55, 0.9, 0.85);
-  color = mix(color, color * greenBlueStormTint, greenStormVisual * 0.6);
 
 
   vec4 lightningData = texture(lightningDataTex, vec2(0.5));
