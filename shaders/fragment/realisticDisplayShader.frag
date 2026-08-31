@@ -233,14 +233,6 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8; // visualize precipitation
 
-  // "Green sky" tint: the eerie green-grey hue associated with severe hailstorms, caused by light
-  // scattering through very dense water/ice aloft. Only shows up where precipitation is genuinely
-  // heavy AND the atmosphere is unstable enough for hail, fading in locally under the cloud base.
-  float hailStormVisual = clamp((totalDensity - 3.0) * 0.4, 0.0, 1.0) * clamp((currentCAPE - hailCapeThreshold) / 1500.0, 0.0, 1.0) * hailEnabled;
-  const vec3 greenSkyTint = vec3(0.55, 0.85, 0.65);
-  cloudCol = mix(cloudCol, cloudCol * greenSkyTint, hailStormVisual * 0.7);
-
-
   // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
 
@@ -259,6 +251,17 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);                                                     // alpha blending
   vec3 color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity); // color blending
+
+  // "Green thunderstorm" tint: applied only to the precipitation itself (not the general cloud mass),
+  // only where its concentration is very high, and only in the upper/mid column -- fading out before
+  // reaching the ground so it never tints the surface/near-ground air.
+  float precipConcentration = clamp((water[PRECIPITATION] - 2.0) / 2.0, 0.0, 1.0); // precipitation alone, not cloud water
+  float altitudeGate = smoothstep(0.15, 0.35, texCoord.y);                         // texCoord.y: 0 = ground, 1 = top of atmosphere
+  float capeGate = clamp((currentCAPE - hailCapeThreshold) / 1500.0, 0.0, 1.0) * hailEnabled;
+  float greenStormVisual = precipConcentration * altitudeGate * capeGate;
+
+  const vec3 greenBlueStormTint = vec3(0.55, 0.9, 0.85);
+  color = mix(color, color * greenBlueStormTint, greenStormVisual * 0.6);
 
 
   vec4 lightningData = texture(lightningDataTex, vec2(0.5));

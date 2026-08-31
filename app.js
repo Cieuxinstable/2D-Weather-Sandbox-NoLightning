@@ -2098,7 +2098,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         const hailDensity = guiControls.hailEnabled ? waterTextureValues[1] + waterTextureValues[2] : 0; // CLOUD + PRECIPITATION
 
-        if (hailDensity > 3.5) { // must match precipitationShader.vert's hailStormDensityThreshold: hail is actually spawning here
+        // Both conditions must match precipitationShader.vert's own hail-spawn gate exactly (density AND
+        // CAPE together, not just one): otherwise the sound could play over ordinary heavy rain that
+        // never actually produced any hail.
+        if (hailDensity > 3.5 && guiControls.CAPE > guiControls.hailCapeThreshold + 200) {
           hailVolume = Math.pow(hailDensity * 0.5, 0.5); // identical formula shape to rainVolume above
 
           hailVolume *= distVolumeMult;
