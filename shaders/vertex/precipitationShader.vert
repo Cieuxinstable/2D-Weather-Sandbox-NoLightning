@@ -122,9 +122,11 @@ void main()
           newMass[ICE] = initalMass;                                     // snow, unless upgraded to hail below
           newDensity = snowDensity;
 
-          const float hailStormDensityThreshold = 2.0; // minimum cloud+precip density for a storm strong enough to produce hail
+          // Hail is reserved for genuinely severe storms: it needs BOTH very heavy local precipitation
+          // AND clearly elevated CAPE at the same time -- neither one alone is enough.
+          const float hailStormDensityThreshold = 3.5; // minimum cloud+precip density: only very heavy precipitation qualifies
           float stormDensity = water[CLOUD] + water[PRECIPITATION];
-          float capeExcess = max(currentCAPE - hailCapeThreshold, 0.0);
+          float capeExcess = max(currentCAPE - hailCapeThreshold - 200.0, 0.0); // small buffer past the threshold before any hail can occur at all
           float hailChance = clamp(capeExcess / 3000.0, 0.0, 1.0); // higher CAPE above the threshold -> hail forms more often
 
           if (hailEnabled > 0.5 && stormDensity > hailStormDensityThreshold &&

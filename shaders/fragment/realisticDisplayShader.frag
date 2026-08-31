@@ -51,6 +51,10 @@ uniform float displayVectorField;
 
 uniform float iterNum;
 
+uniform float currentCAPE;       // most recent CAPE reading (J/kg), drives the "green sky" severe-hailstorm tint
+uniform float hailCapeThreshold; // CAPE above which storms start producing hail
+uniform float hailEnabled;       // 1.0 = hail (and its green-sky visual) allowed, 0.0 = disabled
+
 out vec4 fragmentColor;
 
 #include "common.glsl"
@@ -228,6 +232,13 @@ vec4 getAirColor(vec2 fragCoordIn)
   float cloudDensity = max(cloudwater * 13.6, 0.0);
 
   float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8; // visualize precipitation
+
+  // "Green sky" tint: the eerie green-grey hue associated with severe hailstorms, caused by light
+  // scattering through very dense water/ice aloft. Only shows up where precipitation is genuinely
+  // heavy AND the atmosphere is unstable enough for hail, fading in locally under the cloud base.
+  float hailStormVisual = clamp((totalDensity - 3.0) * 0.4, 0.0, 1.0) * clamp((currentCAPE - hailCapeThreshold) / 1500.0, 0.0, 1.0) * hailEnabled;
+  const vec3 greenSkyTint = vec3(0.55, 0.85, 0.65);
+  cloudCol = mix(cloudCol, cloudCol * greenSkyTint, hailStormVisual * 0.7);
 
 
   // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);

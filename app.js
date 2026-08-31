@@ -2098,7 +2098,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         const hailDensity = guiControls.hailEnabled ? waterTextureValues[1] + waterTextureValues[2] : 0; // CLOUD + PRECIPITATION
 
-        if (hailDensity > 2.0) { // must match precipitationShader.vert's hailStormDensityThreshold: hail is actually spawning here
+        if (hailDensity > 3.5) { // must match precipitationShader.vert's hailStormDensityThreshold: hail is actually spawning here
           hailVolume = Math.pow(hailDensity * 0.5, 0.5); // identical formula shape to rainVolume above
 
           hailVolume *= distVolumeMult;
@@ -6599,6 +6599,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform4f(gl.getUniformLocation(realisticDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
       gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'Xmult'), horizontalDisplayMult);
       gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'iterNum'), iterNum);
+      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'currentCAPE'), guiControls.CAPE);
+      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'hailCapeThreshold'), guiControls.hailCapeThreshold);
+      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'hailEnabled'), guiControls.hailEnabled ? 1.0 : 0.0);
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {

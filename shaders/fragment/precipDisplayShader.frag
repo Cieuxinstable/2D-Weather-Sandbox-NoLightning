@@ -47,7 +47,12 @@ void main()
     // reads as a "curtain" once it actually emerges below the cloud and is falling through clear air.
     float cloudMask = debugView ? 1.0 : mix(1.0, 0.05, smoothstep(0.3, 1.5, cloudAmount_out));
 
-    fragmentColor = vec4(hailColor, hailOpacity * cloudMask);
+    // position_out.y is the simulation's own -1..1 vertical coordinate, where -1 is the ground: fade
+    // hail in as it falls, nearly invisible high up (freshly formed) and fully visible only once close
+    // to hitting the surface.
+    float groundProximity = debugView ? 1.0 : 1.0 - smoothstep(-1.0, -0.85, position_out.y);
+
+    fragmentColor = vec4(hailColor, hailOpacity * cloudMask * groundProximity);
   } else if (mass_out[ICE] > 0.) {              // has ice, not hail
     if (mass_out[WATER] == 0.)                  // pure light ice, no liquid water
       fragmentColor = vec4(1.0, 1.0, 1.0, opacity); // snow, white
