@@ -237,16 +237,15 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8; // visualize precipitation
 
-  // Layer distinction: an active storm's underside is characteristically dark and turbulent-looking
-  // compared to its brighter upper convective body/anvil. Darken and add subtle noise texture only
-  // where there is real precipitation (an active storm cell) and only in the lower-mid column, fading
-  // out higher up so the contrast between the dark base and the paler altitude layers stays visible.
-  float stormActivity = clamp(water[PRECIPITATION] / 2.0, 0.0, 1.0);
-  float stormBaseGate = 1.0 - smoothstep(0.1, 0.5, texCoord.y); // texCoord.y: 0 = ground, 1 = top of atmosphere
-  float stormBaseDarken = stormActivity * stormBaseGate;
+  // Layer distinction: a dense cloud's underside/core is characteristically darker and more turbulent-
+  // looking than its thinner, brighter upper body -- this is purely about the CLOUD mass (cloudDensity),
+  // never about falling precipitation, so rain/hail below the cloud base keep their normal look untouched.
+  float cloudMassActivity = clamp(cloudDensity / 3.0, 0.0, 1.0);
+  float cloudBaseGate = 1.0 - smoothstep(0.1, 0.5, texCoord.y); // texCoord.y: 0 = ground, 1 = top of atmosphere
+  float cloudBaseDarken = cloudMassActivity * cloudBaseGate;
 
-  vec3 stormBaseTexture = texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.15).rgb;
-  cloudCol = mix(cloudCol, cloudCol * mix(vec3(1.0), stormBaseTexture, 0.5) * 0.55, stormBaseDarken);
+  vec3 cloudBaseTexture = texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.15).rgb;
+  cloudCol = mix(cloudCol, cloudCol * mix(vec3(1.0), cloudBaseTexture, 0.5) * 0.55, cloudBaseDarken);
 
   // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
@@ -268,11 +267,11 @@ vec4 getAirColor(vec2 fragCoordIn)
   vec3 color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity); // color blending
 
   // "Green thunderstorm" tint: applied only to the precipitation itself (not the general cloud mass),
-  // restricted to the single most intense core of the local precipitation (the top 5-20% of a practical
-  // extreme-density reference -- everything else around it keeps its normal color), and only in the
+  // restricted to an extremely hyper-localized core -- only above 90% of a practical extreme-density
+  // reference -- so the vast majority of the rain/hail curtain keeps its normal color, and only in the
   // upper/mid column -- fading out before reaching the ground so it never tints the surface/near-ground air.
-  const float precipCoreMaxRef = 5.0;                                                                 // practical reference for "extreme" local precipitation density
-  float precipConcentration = smoothstep(precipCoreMaxRef * 0.8, precipCoreMaxRef * 0.95, water[PRECIPITATION]); // only the 80-95% densest core
+  const float precipCoreMaxRef = 5.0;                                                                  // practical reference for "extreme" local precipitation density
+  float precipConcentration = smoothstep(precipCoreMaxRef * 0.90, precipCoreMaxRef * 0.98, water[PRECIPITATION]); // only above the 90% densest core
   float altitudeGate = smoothstep(0.15, 0.35, texCoord.y);                         // texCoord.y: 0 = ground, 1 = top of atmosphere
   float capeGate = clamp((currentCAPE - hailCapeThreshold) / 1500.0, 0.0, 1.0) * hailEnabled;
   float greenStormVisual = precipConcentration * altitudeGate * capeGate;
