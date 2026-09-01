@@ -336,6 +336,10 @@ var clockEl;
 var atmosStatsEl;
 var lastAtmosStats = null; // last computed {CAPE, CIN, LCL_height, shear06, STP}, shown in soundingGraph and the main UI
 
+var tornadoWarningCanvas;
+var tornadoWarningCtx;
+var tornadoWarning = {active : false, simX : 0, simY : 0, windX : 0}; // updated every frame by updateAtmosStatsForHail()
+
 var simDateTime;
 
 var SETUP_MODE = false;
@@ -407,6 +411,8 @@ const guiControls_default = {
   hailEnabled : true,
   hailCapeThreshold : 1500, // J/kg. CAPE above which storms start producing hail
   hailMeltingRate : 0.002,  // how fast hail melts back to rain as it falls through air above 0C (kept low so it can actually reach the ground)
+  sirenMuted : false,       // silences the tornado siren regardless of STP, without disabling the warning icon/track
+  showTornadoWarning : true, // show the NWS-style warning icon and projected path when STP is extreme and a funnel reaches the ground
   showDrops : false,
   paused : false,
   IterPerFrame : 10,
@@ -657,17 +663,19 @@ function calcBulkShear(baseTextureValues, surfaceLevel)
   return {shear01 : Math.abs(u1km - uSurface), shear06 : Math.abs(u6km - uSurface)};
 }
 
-// Simplified Significant Tornado Parameter (fixed-layer SPC formula), missing its storm-relative
-// helicity term: true SRH needs a turning wind hodograph, which requires a second horizontal wind
-// component this 2D sandbox doesn't simulate. CAPE / LCL height / 0-6km shear / CIN are used as-is.
-function calcSTP(CAPE, CIN, LCL_height, shear06)
+// Simplified Significant Tornado Parameter (fixed-layer SPC formula). True storm-relative helicity (SRH)
+// needs a turning wind hodograph -- a second horizontal wind component this 2D sandbox doesn't simulate --
+// so it can't be computed directly. As a physically-motivated stand-in, low-level (0-1km) bulk shear is
+// used for the helicity/EHI term: it's the closest available proxy for near-surface rotational potential.
+function calcSTP(CAPE, CIN, LCL_height, shear06, shear01)
 {
   const capeTerm = CAPE / 1500.0;
   const lclTerm = clamp((2000.0 - LCL_height) / 1000.0, 0.0, 1.0);
   const shearTerm = clamp(shear06 / 20.0, 0.0, 1.5);
   const cinTerm = clamp((200.0 + CIN) / 150.0, 0.0, 1.0);
+  const helicityTerm = clamp(shear01 / 10.0, 0.0, 1.5); // EHI/helicity proxy: 0-1km shear
 
-  return Math.max(capeTerm * lclTerm * shearTerm * cinTerm, 0.0);
+  return Math.max(capeTerm * lclTerm * shearTerm * cinTerm * helicityTerm, 0.0);
 }
 
 // Print funtions:
@@ -983,6 +991,7 @@ class Weatherstation
   #soilMoisture = 0; // mm
   #snowHeight = 0;   // cm
   #hailSize = 0;     // cm, estimated diameter
+  #stp = 0;          // Significant Tornado Parameter, computed from this station's own vertical column
   #airQuality = 0;   // AQI
   #waterTemperature = 0;
 
@@ -1088,7 +1097,8 @@ class Weatherstation
           {label : 'Precipitation', data : [], backgroundColor : '#0055FF', borderColor : '#0055FF', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true},    //
           {label : 'Snow Height', data : [], backgroundColor : '#FFFFFF', borderColor : '#FFFFFF', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true},      //
           {label : 'Water Temperature', data : [], backgroundColor : '#406cff', borderColor : '#406cff', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true}, //
-          {label : 'Taille grêle (cm)', data : [], backgroundColor : '#FF3030', borderColor : '#FF3030', radius : 0, borderWidth : 1, fill : false, hidden : true}                       //
+          {label : 'Taille grêle (cm)', data : [], backgroundColor : '#FF3030', borderColor : '#FF3030', radius : 0, borderWidth : 1, fill : false, hidden : true},                      //
+          {label : 'STP', data : [], backgroundColor : '#FF8C00', borderColor : '#FF8C00', radius : 0, borderWidth : 1, fill : false, hidden : true}                                     //
         ]
       },
       options : {
@@ -1151,6 +1161,7 @@ class Weatherstation
       this.#historyChart.data.datasets[2].data.push(convertVelocityToSelectedUnit(this.#velocity));
       this.#historyChart.data.datasets[3].data.push(this.#airQuality);
       this.#historyChart.data.datasets[7].data.push(guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL' ? mmToIn(this.#hailSize) : this.#hailSize);
+      this.#historyChart.data.datasets[8].data.push(this.#stp);
 
       if (this.#isOnLand) {
         this.#historyChart.data.datasets[4].data.push(guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL' ? mmToIn(this.#soilMoisture) : this.#soilMoisture);
@@ -1285,6 +1296,38 @@ class Weatherstation
       this.#hailSize = 0;
     }
 
+    // Station-local STP: reads a full vertical column at this station's own X position (independent of
+    // the camera/mouse-based CAPE gauge) so each station reports the tornado potential specific to its
+    // own location. Cheap to do here since measure() only runs roughly once a minute of sim time.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    var stpBaseValues = new Float32Array(4 * sim_res_y);
+    gl.readPixels(this.#x, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, stpBaseValues);
+
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    var stpWaterValues = new Float32Array(4 * sim_res_y);
+    gl.readPixels(this.#x, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, stpWaterValues);
+
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    var stpWallValues = new Int32Array(4 * sim_res_y);
+    gl.readPixels(this.#x, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, stpWallValues);
+
+    let stpSurfaceLevel = -1;
+    for (let y = 0; y < sim_res_y; y++) {
+      if (stpWallValues[4 * y + 1] != 0) { // first fluid (non-wall) cell = the surface
+        stpSurfaceLevel = y;
+        break;
+      }
+    }
+
+    if (stpSurfaceLevel >= 0) {
+      const parcelIndices = calcParcelIndices(stpBaseValues, stpWaterValues, stpWallValues, stpSurfaceLevel);
+      const shear = calcBulkShear(stpBaseValues, stpSurfaceLevel);
+      this.#stp = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06, shear.shear01);
+    } else {
+      this.#stp = 0;
+    }
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
     gl.readBuffer(gl.COLOR_ATTACHMENT0); // light texture
     var lightTextureValues = new Float32Array(4);
@@ -1304,6 +1347,8 @@ class Weatherstation
   getXpos() { return this.#x; }
 
   getYpos() { return this.#y; }
+
+  getSTP() { return this.#stp; }
 
   setHidden(hidden)
   {
@@ -1874,6 +1919,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     hail_light_sound;
     hail_heavy_sound;
     hailAudible = false; // tracks whether hail sound is currently playing, so we only log on state changes
+    tornado_siren_sound;
+    sirenAudible = false; // tracks whether the siren is currently playing, so we only log on state changes
 
 
     constructor()
@@ -1902,6 +1949,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           console.log('[hail audio] resources/sounds/hail_heavy.mp3 loaded OK, duration:', buffer.duration.toFixed(2) + 's');
         })
         .catch(err => { console.error('Erreur chargement hail_heavy:', err); });
+
+      this.loadSound('tornado_siren.mp3')
+        .then(buffer => {
+          this.tornado_siren_sound = this.playLoop(buffer, 0.0);
+          console.log('[siren audio] resources/sounds/tornado_siren.mp3 loaded OK, duration:', buffer.duration.toFixed(2) + 's');
+        })
+        .catch(err => { console.error('Erreur chargement tornado_siren:', err); });
 
       // Browsers suspend a freshly-created AudioContext until a real user gesture (click/keydown) resumes it.
       // The context is normally created during app startup, which can happen too far from the "Create
@@ -2144,6 +2198,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         //    console.log(distVolumeMult, rainVolume, windVolume, hailVolume);
       }
 
+      // Tornado siren: independent of camera zoom/distance (unlike the ambient sounds above) since a
+      // warning shouldn't go quiet just because the player zoomed out. Triggers if STP is high either
+      // in the currently viewed column (guiControls.STP, updated every frame) or at any weather station.
+      const tornadoSirenThreshold = 2.5; // SPC guidance: STP > ~1-2 is already significant, 2-3+ is a serious tornado threat
+      const viewSTP = guiControls.STP || 0;
+      const maxStationSTP = weatherStations.reduce((max, station) => Math.max(max, station.getSTP()), 0);
+      this.setTornadoSiren(Math.max(viewSTP, maxStationSTP) > tornadoSirenThreshold);
+
       if (airplaneMode) {
         let camXnorm = 1. - (cam.curXpos + 1.0) / 2.0;
         let camYnorm = 1. - (cam.curYpos * sim_aspect + 1.0) / 2.0;
@@ -2191,7 +2253,23 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.setSoundGainAndPan(this.hail_light_sound, 0);
       this.setSoundGainAndPan(this.hail_heavy_sound, 0);
       this.hailAudible = false;
+      this.setSoundGainAndPan(this.tornado_siren_sound, 0);
+      this.sirenAudible = false;
       this.jetEngineSound.mute();
+    }
+
+    // active: whether STP conditions currently call for the siren. Muting is a separate user toggle
+    // (guiControls.sirenMuted) that overrides this regardless of STP, so the alarm can always be silenced.
+    setTornadoSiren(active)
+    {
+      const isActiveNow = active && !guiControls.sirenMuted;
+
+      this.setSoundGainAndPan(this.tornado_siren_sound, isActiveNow ? 0.8 : 0);
+
+      if (isActiveNow !== this.sirenAudible) { // log only on silence <-> audible transitions
+        console.log(isActiveNow ? 'ALERTE : sirène de tornade déclenchée (STP élevé détecté)' : '[siren audio] sirène coupée');
+        this.sirenAudible = isActiveNow;
+      }
     }
   }
 
@@ -4032,6 +4110,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Vitesse de fonte (Température au sol)');
 
 
+    var tornado_folder = datGui.addFolder('Tornado Alert');
+
+    tornado_folder.add(guiControls, 'sirenMuted').name('Mute Siren');
+
+    tornado_folder.add(guiControls, 'showTornadoWarning').name('Show Warning Icon & Path');
+
+
     var display_folder = datGui.addFolder('Display');
 
     display_folder
@@ -4212,6 +4297,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     atmosStatsEl.style.color = 'white';
     atmosStatsEl.style.textShadow = '1px 1px 2px black';
 
+    tornadoWarningCanvas = document.createElement('canvas');
+    document.body.appendChild(tornadoWarningCanvas);
+    tornadoWarningCanvas.width = canvas.width;
+    tornadoWarningCanvas.height = canvas.height;
+    tornadoWarningCanvas.style.position = 'absolute';
+    tornadoWarningCanvas.style.top = '0px';
+    tornadoWarningCanvas.style.left = '0px';
+    tornadoWarningCanvas.style.pointerEvents = 'none'; // never intercept clicks/drags meant for the sim underneath
+    tornadoWarningCanvas.style.zIndex = 2;
+    tornadoWarningCtx = tornadoWarningCanvas.getContext('2d');
+
     simDateTime = new Date(2000, Math.floor(guiControls.month) - 1, (guiControls.month % 1) * 30.417);
 
     // initialize time and solar angle
@@ -4261,7 +4357,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     const parcelIndices = calcParcelIndices(baseTextureValues, waterTextureValues, wallTextureValues, surfaceLevel);
     const shear = calcBulkShear(baseTextureValues, surfaceLevel);
-    const STP = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06);
+    const STP = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06, shear.shear01);
 
     lastAtmosStats = {
       CAPE : parcelIndices.CAPE,
@@ -4273,6 +4369,102 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     guiControls.CAPE = lastAtmosStats.CAPE;
     guiControls.STP = lastAtmosStats.STP;
+
+    // Tornado detection: STP > 10 is an extreme value reserved for the most violent setups, and this 2D
+    // sandbox has no real funnel cloud, so "the funnel reaches the ground" is approximated as the cloud
+    // itself (CLOUD channel) extending down to near the surface layer, rather than staying lofted above it.
+    const lowLevelBandCells = Math.max(Math.round((sim_res_y * 300.0) / guiControls.simHeight), 1); // ~300m band above the surface
+    let cloudNearSurface = 0.0;
+    for (let y = surfaceLevel + 1; y <= Math.min(surfaceLevel + lowLevelBandCells, sim_res_y - 1); y++) {
+      cloudNearSurface = Math.max(cloudNearSurface, waterTextureValues[4 * y + 1]); // CLOUD channel
+    }
+
+    const tornadoActive = STP > 10.0 && cloudNearSurface > 0.5;
+
+    if (tornadoActive) {
+      // Mean wind over the lowest ~3km, used to project the tornado's likely path.
+      const y3km = Math.min(surfaceLevel + Math.round(3000.0 / (guiControls.simHeight / sim_res_y)), sim_res_y - 1);
+      let meanWindX = 0.0;
+      let sampleCount = 0;
+      for (let y = surfaceLevel; y <= y3km; y++) {
+        meanWindX += baseTextureValues[4 * y + 0];
+        sampleCount++;
+      }
+      meanWindX /= Math.max(sampleCount, 1);
+
+      tornadoWarning.active = true;
+      tornadoWarning.simX = simXpos;
+      tornadoWarning.simY = surfaceLevel;
+      tornadoWarning.windX = meanWindX;
+    } else {
+      tornadoWarning.active = false;
+    }
+  }
+
+  // NWS/NOAA-style tornado warning overlay: a red/orange warning triangle plus a dashed projected-path
+  // arrow in the mean low-level wind direction, drawn on a transparent 2D canvas above the WebGL canvas.
+  function drawTornadoWarning()
+  {
+    if (!tornadoWarningCtx)
+      return;
+
+    tornadoWarningCtx.clearRect(0, 0, tornadoWarningCanvas.width, tornadoWarningCanvas.height);
+
+    if (!guiControls.showTornadoWarning || !tornadoWarning.active)
+      return;
+
+    const c = tornadoWarningCtx;
+    const x = simToScreenX(tornadoWarning.simX);
+    const y = simToScreenY(tornadoWarning.simY);
+
+    // Projected path: dashed arrow pointing in the mean low-level wind direction
+    const dirX = tornadoWarning.windX >= 0 ? 1 : -1;
+    const pathLength = 180;
+
+    c.save();
+    c.strokeStyle = '#FF9900';
+    c.lineWidth = 3;
+    c.setLineDash([10, 8]);
+    c.beginPath();
+    c.moveTo(x, y);
+    c.lineTo(x + dirX * pathLength, y);
+    c.stroke();
+    c.setLineDash([]);
+
+    c.beginPath();
+    c.moveTo(x + dirX * pathLength, y);
+    c.lineTo(x + dirX * (pathLength - 14), y - 8);
+    c.lineTo(x + dirX * (pathLength - 14), y + 8);
+    c.closePath();
+    c.fillStyle = '#FF9900';
+    c.fill();
+    c.restore();
+
+    // NWS-style warning triangle (red/orange, white exclamation mark)
+    const size = 28;
+    c.save();
+    c.translate(x, y - 50);
+    c.beginPath();
+    c.moveTo(0, -size);
+    c.lineTo(size * 0.87, size * 0.5);
+    c.lineTo(-size * 0.87, size * 0.5);
+    c.closePath();
+    c.fillStyle = 'rgba(255, 60, 0, 0.85)';
+    c.fill();
+    c.lineWidth = 3;
+    c.strokeStyle = '#FFFFFF';
+    c.stroke();
+
+    c.fillStyle = '#FFFFFF';
+    c.font = 'bold 26px Arial';
+    c.textAlign = 'center';
+    c.fillText('!', 0, size * 0.32);
+    c.restore();
+
+    c.fillStyle = '#FF3C00';
+    c.font = 'bold 14px Arial';
+    c.textAlign = 'center';
+    c.fillText('TORNADO WARNING', x, y - 85);
   }
 
   var soundingGraph = {
@@ -4384,7 +4576,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       if (reachedAir) {
         const parcelIndices = calcParcelIndices(baseTextureValues, waterTextureValues, wallTextureValues, surfaceLevel);
         const shear = calcBulkShear(baseTextureValues, surfaceLevel);
-        const STP = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06);
+        const STP = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06, shear.shear01);
 
         lastAtmosStats = {
           CAPE : parcelIndices.CAPE,
@@ -4606,6 +4798,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     soundingGraph.graphCanvas.height = window.innerHeight;
     soundingGraph.graphCanvas.width = window.innerHeight;
+
+    if (tornadoWarningCanvas) {
+      tornadoWarningCanvas.width = canvas.width;
+      tornadoWarningCanvas.height = canvas.height;
+    }
 
     // Render output framebuffers need to match canvas resolution
     createBloomFBOs(); // recreate bloom framebuffers
@@ -6449,6 +6646,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     } // END OF NOT SETUP MODE
 
+    drawTornadoWarning();
 
     let cursorType = 1.0; // normal circular brush
     if (guiControls.wholeWidth) {
