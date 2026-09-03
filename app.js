@@ -1003,6 +1003,8 @@ class Weatherstation
   #x; // position in simulation
   #y;
 
+  #alarmEnabled = true; // per-station tornado siren toggle, independent of every other station and of guiControls.sirenMuted
+
   #isOnLand = false;
   #isOnWater = false;
 
@@ -1053,9 +1055,8 @@ class Weatherstation
     this.#canvas.addEventListener('mousedown', function(event) {
       if (event.button == 0) {     // left mouse button
         const clickX = event.offsetX, clickY = event.offsetY;
-        if (clickX >= Weatherstation.#sirenIconX && clickY <= Weatherstation.#sirenIconY) { // small siren toggle icon, top-right corner
-          guiControls.sirenMuted = !guiControls.sirenMuted;
-          updateSirenToggleButton(); // keep the general-UI button and dat.GUI checkbox in sync
+        if (clickX >= Weatherstation.#sirenIconX && clickY <= Weatherstation.#sirenIconY) { // this station's own siren toggle icon, top-right corner
+          thisObj.#alarmEnabled = !thisObj.#alarmEnabled;
           event.stopPropagation();
         } else if (guiControls.tool == 'TOOL_STATION') {
           thisObj.destroy();       // remove weather station
@@ -1389,6 +1390,8 @@ class Weatherstation
 
   getSTP() { return this.#stp; }
 
+  isAlarmEnabled() { return this.#alarmEnabled; }
+
   setHidden(hidden)
   {
     this.#mainDiv.style.display = hidden ? 'none' : 'block';
@@ -1410,10 +1413,10 @@ class Weatherstation
     c.fillStyle = '#00000000';
     c.fillRect(0, 0, this.#width, this.#height);
 
-    // siren mute/unmute icon (top-right corner, click target defined by Weatherstation.#sirenIconX/Y)
+    // this station's own alarm enable/disable icon (top-right corner, click target defined by Weatherstation.#sirenIconX/Y)
     c.font = '14px Arial';
-    c.fillStyle = guiControls.sirenMuted ? '#888888' : '#FF4444';
-    c.fillText(guiControls.sirenMuted ? '🔕' : '🔔', this.#width - 20, 14);
+    c.fillStyle = this.#alarmEnabled ? '#FF4444' : '#888888';
+    c.fillText(this.#alarmEnabled ? '🔔' : '🔕', this.#width - 20, 14);
 
     // temperature
     c.font = '15px Arial';
@@ -2173,11 +2176,26 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         var waterTextureValues = new Float32Array(4);
         gl.readPixels(simXpos, justAboveSurfaceCellY, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
 
-        // rain sound
+        // rain / hail sound: mutually exclusive by construction. Both used to read the exact same grid
+        // PRECIPITATION value near the surface with independent gates (temperature for rain, CAPE for
+        // hail), so a warm, high-CAPE storm played both sounds together over identical precipitation.
+        // This now classifies the sampled point as ONE of the two: hail "owns" it while cold enough and
+        // CAPE is high enough to be forming hail (precipitationShader.vert's own spawn gate), and hands
+        // off to rain as it melts through the 0-3C band -- the same band the old rain fade already used,
+        // and the one hailMeltingRate uses to melt hail back into rain near the surface. Note this reads
+        // PRECIPITATION only (not CLOUD) because the sample point is a few cells above the ground --
+        // water[CLOUD] is essentially always ~0 that close to the surface (clouds don't reach the
+        // ground), so requiring CLOUD+PRECIPITATION to clear the in-cloud spawn threshold here was never
+        // actually reachable and would silently mute the sound whenever hail was actually falling.
+        const capeExcess = Math.max(guiControls.CAPE - guiControls.hailCapeThreshold, 0);
+        const hailFormationActive = guiControls.hailEnabled && capeExcess > 200; // same CAPE qualifying condition as hail spawning
+        const hailMeltFraction = clamp(tempC / 3.0, 0.0, 1.0);                   // 0 = still hail-cold, 1 = fully melted to rain
+        const isHailHere = hailFormationActive && hailMeltFraction < 1.0;
 
+        // rain sound
         let rainVolume = 0;
 
-        if (tempC > 0) {
+        if (tempC > 0 && !isHailHere) {
           rainVolume = Math.pow(waterTextureValues[2] * 0.5, 0.5);
 
           rainVolume *= map_range_C(tempC, 0., 3., 0., 1.); // rain sound fades as temperature approaches 0 (wet snow)
@@ -2187,23 +2205,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
 
-        // hail sound: this is a straight duplicate of the rain sound code directly above it -- same
-        // single-point sample already read into waterTextureValues, same volume formula, same
-        // distVolumeMult falloff, same direct this.setSoundGainAndPan(...) call. The only differences
-        // are the gate (CAPE, matching precipitationShader.vert's own spawn threshold instead of
-        // temperature) and picking one of the two hail samples instead of always using rain_sound.
-        //
-        // Note: this reads PRECIPITATION only (not CLOUD) because the sample point is a few cells above
-        // the ground -- water[CLOUD] is essentially always ~0 that close to the surface (clouds don't
-        // reach the ground), so requiring CLOUD+PRECIPITATION to clear the in-cloud spawn threshold here
-        // was never actually reachable and silently muted the sound whenever hail was actually falling.
+        // hail sound: only ever plays while isHailHere is true, so never alongside rain_sound for the
+        // same precipitation.
         let hailVolume = 0;
         let hailPan = 0;
 
-        const hailPrecipNearGround = guiControls.hailEnabled ? waterTextureValues[2] : 0; // PRECIPITATION falling near the camera
+        if (isHailHere) {
+          const hailPrecipNearGround = waterTextureValues[2]; // PRECIPITATION falling near the camera
 
-        if (guiControls.CAPE > guiControls.hailCapeThreshold + 200) { // same CAPE qualifying condition as hail spawning
-          hailVolume = Math.pow(hailPrecipNearGround * 0.5, 0.5); // identical formula shape to rainVolume above
+          hailVolume = Math.pow(hailPrecipNearGround * 0.5, 0.5) * (1.0 - hailMeltFraction); // fades through the melt band instead of cutting instantly
 
           hailVolume *= distVolumeMult;
 
@@ -2242,15 +2252,36 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         //    console.log(distVolumeMult, rainVolume, windVolume, hailVolume);
       }
 
-      // Tornado siren: independent of camera zoom/distance (unlike the ambient sounds above) since a
-      // warning shouldn't go quiet just because the player zoomed out. Triggers if STP is high either
-      // in the currently viewed column (guiControls.STP, updated every frame) or within proximity range
-      // of any weather station (station.getSTP() already samples a radius around the station, not just
-      // the exact column under it -- see Weatherstation.measure()).
-      const tornadoSirenThreshold = 5.0; // alarm-worthy: a rare, dangerous STP value
+      // Tornado siren: each station has its own alarm toggle (station.isAlarmEnabled()) and its own alert
+      // once STP nearby crosses the threshold (station.getSTP() already samples a radius around the
+      // station -- see Weatherstation.measure()); the siren's volume then falls off with real-world
+      // distance from whichever alerting station is closest, and goes silent once every alerting station
+      // is outside the camera's extended field of view. The camera's own column (guiControls.STP,
+      // independent of any station) always counts as being right at the epicenter -- full volume,
+      // regardless of camera zoom -- since a warning shouldn't go quiet just because the player zoomed out.
+      const tornadoSirenThreshold = 11.0; // alarm-worthy: an extreme, rare STP value
       const viewSTP = guiControls.STP || 0;
-      const maxStationSTP = weatherStations.reduce((max, station) => Math.max(max, station.getSTP()), 0);
-      this.setTornadoSiren(Math.max(viewSTP, maxStationSTP) > tornadoSirenThreshold);
+
+      const domainWidth_m = sim_res_x * cellHeight;
+      const camXpos_m = ((-Xpos + 1) * 0.5 * sim_res_x) * cellHeight;
+      const sirenRange_m = Math.max(camDistFromSim * 2.0, 1); // "extended field of view": audible out to ~2x the visible half-width
+
+      let sirenIntensity = viewSTP > tornadoSirenThreshold ? 1.0 : 0.0;
+
+      for (const station of weatherStations) {
+        if (!station.isAlarmEnabled() || station.getSTP() <= tornadoSirenThreshold)
+          continue;
+
+        const stationX_m = station.getXpos() * cellHeight;
+        let dist_m = Math.abs(camXpos_m - stationX_m);
+        if (guiControls.wrapHorizontally)
+          dist_m = Math.min(dist_m, domainWidth_m - dist_m);
+
+        const falloff = clamp(1.0 - dist_m / sirenRange_m, 0.0, 1.0);
+        sirenIntensity = Math.max(sirenIntensity, falloff);
+      }
+
+      this.setTornadoSiren(sirenIntensity);
 
       if (airplaneMode) {
         let camXnorm = 1. - (cam.curXpos + 1.0) / 2.0;
@@ -2306,20 +2337,24 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.jetEngineSound.mute();
     }
 
-    // active: whether STP conditions currently call for the siren. Muting is a separate user toggle
-    // (guiControls.sirenMuted) that overrides this regardless of STP, so the alarm can always be silenced.
-    setTornadoSiren(active)
+    // intensity: 0..1, how loud the alarm should be right now -- combines each station's own STP-threshold
+    // crossing and alarm toggle with distance falloff from the camera, or 1.0 if the camera's own column
+    // is itself above threshold (see updateAmbientSound). guiControls.sirenMuted is a separate master
+    // override that silences the alarm regardless of intensity, on top of every station's own toggle.
+    setTornadoSiren(intensity)
     {
-      const isActiveNow = active && !guiControls.sirenMuted;
+      const targetIntensity = guiControls.sirenMuted ? 0 : clamp(intensity, 0, 1);
+      const isActiveNow = targetIntensity > 0.001;
 
       if (this.tornado_siren_sound) {
-        const targetGain = isActiveNow ? 0.8 : 0.0;
-        // Continuous fade instead of snapping the gain instantly -- especially important going quiet,
-        // so the siren winds down over ~1.5s (STP dropping below threshold, or the storm moving out of
-        // range) rather than cutting off mid-wail. A single reused AudioParam ramp, no new sound objects.
-        if (targetGain != this.tornado_siren_sound.gain.value || isActiveNow !== this.sirenAudible) {
+        const targetGain = targetIntensity * 0.8;
+        // Continuous fade instead of snapping the gain instantly -- this also smooths out continuous
+        // distance changes as the camera pans, not just on/off transitions. Especially important going
+        // quiet: the siren winds down over ~1.5s (STP dropping below threshold, or the storm moving out
+        // of range) rather than cutting off mid-wail. A single reused AudioParam ramp, no new sound objects.
+        if (Math.abs(targetGain - this.tornado_siren_sound.gain.value) > 0.002 || isActiveNow !== this.sirenAudible) {
           const now = this.audioCtx.currentTime;
-          const fadeSeconds = isActiveNow ? 1.0 : 1.5;
+          const fadeSeconds = targetGain < this.tornado_siren_sound.gain.value ? 1.5 : 1.0;
           this.tornado_siren_sound.gain.cancelScheduledValues(now);
           this.tornado_siren_sound.gain.setValueAtTime(this.tornado_siren_sound.gain.value, now);
           this.tornado_siren_sound.gain.linearRampToValueAtTime(targetGain, now + fadeSeconds);
