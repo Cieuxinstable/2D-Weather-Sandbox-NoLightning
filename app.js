@@ -336,6 +336,24 @@ var clockEl;
 var atmosStatsEl;
 var lastAtmosStats = null; // last computed {CAPE, CIN, LCL_height, shear06, STP}, shown in soundingGraph and the main UI
 
+var sirenToggleEl; // always-visible general-UI button that mirrors/drives guiControls.sirenMuted
+
+// Keeps the on-screen siren button and the dat.GUI checkbox in sync no matter which one the user
+// clicked (or if a weather station panel's own siren icon changed it).
+function updateSirenToggleButton()
+{
+  if (!sirenToggleEl)
+    return;
+
+  if (guiControls.sirenMuted) {
+    sirenToggleEl.innerHTML = '🔇 Siren OFF';
+    sirenToggleEl.style.background = '#552222';
+  } else {
+    sirenToggleEl.innerHTML = '🔊 Siren ON';
+    sirenToggleEl.style.background = '#225522';
+  }
+}
+
 var tornadoWarningCanvas;
 var tornadoWarningCtx;
 var tornadoWarning = {active : false, simX : 0, simY : 0, windX : 0}; // updated every frame by updateAtmosStatsForHail()
@@ -464,6 +482,8 @@ var iterNum = 0;
 
 // global framebuffers for measurements
 var frameBuff_0;
+var frameBuff_1; // read by Weatherstation.measure() (top-level class), so must be a real global, not a
+                  // mainScript()-local const -- it holds the previous-frame textures used for station STP
 var lightFrameBuff_0;
 
 var dryLapse;
@@ -972,6 +992,9 @@ function createAmbientLightFBOs()
 
 class Weatherstation
 {
+  static #sirenIconX = 100; // top-right corner hit-box for the per-station siren mute/unmute icon
+  static #sirenIconY = 16;
+
   #width = 120; // 100 display size
   #height = 70; // 55
   #mainDiv;
@@ -1029,7 +1052,12 @@ class Weatherstation
     let thisObj = this;
     this.#canvas.addEventListener('mousedown', function(event) {
       if (event.button == 0) {     // left mouse button
-        if (guiControls.tool == 'TOOL_STATION') {
+        const clickX = event.offsetX, clickY = event.offsetY;
+        if (clickX >= Weatherstation.#sirenIconX && clickY <= Weatherstation.#sirenIconY) { // small siren toggle icon, top-right corner
+          guiControls.sirenMuted = !guiControls.sirenMuted;
+          updateSirenToggleButton(); // keep the general-UI button and dat.GUI checkbox in sync
+          event.stopPropagation();
+        } else if (guiControls.tool == 'TOOL_STATION') {
           thisObj.destroy();       // remove weather station
           event.stopPropagation(); // prevent mousedown on body from firing
         } else {
@@ -1296,37 +1324,48 @@ class Weatherstation
       this.#hailSize = 0;
     }
 
-    // Station-local STP: reads a full vertical column at this station's own X position (independent of
-    // the camera/mouse-based CAPE gauge) so each station reports the tornado potential specific to its
-    // own location. Cheap to do here since measure() only runs roughly once a minute of sim time.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    var stpBaseValues = new Float32Array(4 * sim_res_y);
-    gl.readPixels(this.#x, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, stpBaseValues);
+    // Proximity STP: rather than reading only the exact column under the station marker, this samples a
+    // handful of columns spread across a radius around the station so the siren (which reads getSTP())
+    // reacts to a tornado-favorable column APPROACHING the station, not only one sitting exactly on it.
+    // Cheap to do here since measure() only runs roughly once a minute of sim time.
+    const stpProximityRadius_m = 5000; // 5 km catchment radius around each station
+    const stpRadiusCells = Math.max(Math.round(stpProximityRadius_m / cellHeight), 1); // cellHeight == cell width
+    const stpSampleOffsets = [ -stpRadiusCells, -Math.round(stpRadiusCells / 2), 0, Math.round(stpRadiusCells / 2), stpRadiusCells ];
 
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    var stpWaterValues = new Float32Array(4 * sim_res_y);
-    gl.readPixels(this.#x, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, stpWaterValues);
+    let maxNearbySTP = 0;
+    for (const offset of stpSampleOffsets) {
+      const sampleX = clamp(this.#x + offset, 0, sim_res_x - 1);
 
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    var stpWallValues = new Int32Array(4 * sim_res_y);
-    gl.readPixels(this.#x, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, stpWallValues);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      var stpBaseValues = new Float32Array(4 * sim_res_y);
+      gl.readPixels(sampleX, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, stpBaseValues);
 
-    let stpSurfaceLevel = -1;
-    for (let y = 0; y < sim_res_y; y++) {
-      if (stpWallValues[4 * y + 1] != 0) { // first fluid (non-wall) cell = the surface
-        stpSurfaceLevel = y;
-        break;
+      gl.readBuffer(gl.COLOR_ATTACHMENT1);
+      var stpWaterValues = new Float32Array(4 * sim_res_y);
+      gl.readPixels(sampleX, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, stpWaterValues);
+
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      var stpWallValues = new Int32Array(4 * sim_res_y);
+      gl.readPixels(sampleX, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, stpWallValues);
+
+      let stpSurfaceLevel = -1;
+      for (let y = 0; y < sim_res_y; y++) {
+        if (stpWallValues[4 * y + 1] != 0) { // first fluid (non-wall) cell = the surface
+          stpSurfaceLevel = y;
+          break;
+        }
+      }
+
+      if (stpSurfaceLevel >= 0) {
+        const parcelIndices = calcParcelIndices(stpBaseValues, stpWaterValues, stpWallValues, stpSurfaceLevel);
+        const shear = calcBulkShear(stpBaseValues, stpSurfaceLevel);
+        const sampleSTP = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06, shear.shear01);
+        maxNearbySTP = Math.max(maxNearbySTP, sampleSTP);
       }
     }
 
-    if (stpSurfaceLevel >= 0) {
-      const parcelIndices = calcParcelIndices(stpBaseValues, stpWaterValues, stpWallValues, stpSurfaceLevel);
-      const shear = calcBulkShear(stpBaseValues, stpSurfaceLevel);
-      this.#stp = calcSTP(parcelIndices.CAPE, parcelIndices.CIN, parcelIndices.LCL_height, shear.shear06, shear.shear01);
-    } else {
-      this.#stp = 0;
-    }
+    this.#stp = maxNearbySTP;
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
     gl.readBuffer(gl.COLOR_ATTACHMENT0); // light texture
@@ -1370,6 +1409,11 @@ class Weatherstation
     c.clearRect(0, 0, this.#width, this.#height);
     c.fillStyle = '#00000000';
     c.fillRect(0, 0, this.#width, this.#height);
+
+    // siren mute/unmute icon (top-right corner, click target defined by Weatherstation.#sirenIconX/Y)
+    c.font = '14px Arial';
+    c.fillStyle = guiControls.sirenMuted ? '#888888' : '#FF4444';
+    c.fillText(guiControls.sirenMuted ? '🔕' : '🔔', this.#width - 20, 14);
 
     // temperature
     c.font = '15px Arial';
@@ -2200,8 +2244,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // Tornado siren: independent of camera zoom/distance (unlike the ambient sounds above) since a
       // warning shouldn't go quiet just because the player zoomed out. Triggers if STP is high either
-      // in the currently viewed column (guiControls.STP, updated every frame) or at any weather station.
-      const tornadoSirenThreshold = 2.5; // SPC guidance: STP > ~1-2 is already significant, 2-3+ is a serious tornado threat
+      // in the currently viewed column (guiControls.STP, updated every frame) or within proximity range
+      // of any weather station (station.getSTP() already samples a radius around the station, not just
+      // the exact column under it -- see Weatherstation.measure()).
+      const tornadoSirenThreshold = 5.0; // alarm-worthy: a rare, dangerous STP value
       const viewSTP = guiControls.STP || 0;
       const maxStationSTP = weatherStations.reduce((max, station) => Math.max(max, station.getSTP()), 0);
       this.setTornadoSiren(Math.max(viewSTP, maxStationSTP) > tornadoSirenThreshold);
@@ -2253,6 +2299,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.setSoundGainAndPan(this.hail_light_sound, 0);
       this.setSoundGainAndPan(this.hail_heavy_sound, 0);
       this.hailAudible = false;
+      if (this.tornado_siren_sound)
+        this.tornado_siren_sound.gain.cancelScheduledValues(this.audioCtx.currentTime); // drop any in-progress fade before snapping to silent
       this.setSoundGainAndPan(this.tornado_siren_sound, 0);
       this.sirenAudible = false;
       this.jetEngineSound.mute();
@@ -2264,10 +2312,22 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     {
       const isActiveNow = active && !guiControls.sirenMuted;
 
-      this.setSoundGainAndPan(this.tornado_siren_sound, isActiveNow ? 0.8 : 0);
+      if (this.tornado_siren_sound) {
+        const targetGain = isActiveNow ? 0.8 : 0.0;
+        // Continuous fade instead of snapping the gain instantly -- especially important going quiet,
+        // so the siren winds down over ~1.5s (STP dropping below threshold, or the storm moving out of
+        // range) rather than cutting off mid-wail. A single reused AudioParam ramp, no new sound objects.
+        if (targetGain != this.tornado_siren_sound.gain.value || isActiveNow !== this.sirenAudible) {
+          const now = this.audioCtx.currentTime;
+          const fadeSeconds = isActiveNow ? 1.0 : 1.5;
+          this.tornado_siren_sound.gain.cancelScheduledValues(now);
+          this.tornado_siren_sound.gain.setValueAtTime(this.tornado_siren_sound.gain.value, now);
+          this.tornado_siren_sound.gain.linearRampToValueAtTime(targetGain, now + fadeSeconds);
+        }
+      }
 
       if (isActiveNow !== this.sirenAudible) { // log only on silence <-> audible transitions
-        console.log(isActiveNow ? 'ALERTE : sirène de tornade déclenchée (STP élevé détecté)' : '[siren audio] sirène coupée');
+        console.log(isActiveNow ? 'ALERTE : sirène de tornade déclenchée (STP élevé détecté)' : '[siren audio] sirène coupée (fondu)');
         this.sirenAudible = isActiveNow;
       }
     }
@@ -4112,7 +4172,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     var tornado_folder = datGui.addFolder('Tornado Alert');
 
-    tornado_folder.add(guiControls, 'sirenMuted').name('Mute Siren');
+    tornado_folder.add(guiControls, 'sirenMuted').name('Mute Siren').listen().onChange(updateSirenToggleButton);
 
     tornado_folder.add(guiControls, 'showTornadoWarning').name('Show Warning Icon & Path');
 
@@ -4296,6 +4356,26 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     atmosStatsEl.style.fontSize = '16px';
     atmosStatsEl.style.color = 'white';
     atmosStatsEl.style.textShadow = '1px 1px 2px black';
+
+    sirenToggleEl = document.createElement('button');
+    document.body.appendChild(sirenToggleEl);
+    sirenToggleEl.style.position = 'absolute';
+    sirenToggleEl.style.top = '75px';
+    sirenToggleEl.style.left = '0px';
+    sirenToggleEl.style.zIndex = 3;
+    sirenToggleEl.style.fontFamily = 'Monospace';
+    sirenToggleEl.style.fontSize = '15px';
+    sirenToggleEl.style.color = 'white';
+    sirenToggleEl.style.border = '1px solid white';
+    sirenToggleEl.style.borderRadius = '4px';
+    sirenToggleEl.style.padding = '4px 8px';
+    sirenToggleEl.style.cursor = 'pointer';
+    sirenToggleEl.title = 'Activer/désactiver l\'alarme de sirène de tornade';
+    sirenToggleEl.addEventListener('click', function() {
+      guiControls.sirenMuted = !guiControls.sirenMuted;
+      updateSirenToggleButton();
+    });
+    updateSirenToggleButton();
 
     tornadoWarningCanvas = document.createElement('canvas');
     document.body.appendChild(tornadoWarningCanvas);
@@ -5782,7 +5862,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
 
   frameBuff_0 = gl.createFramebuffer(); // global for weather stations
-  const frameBuff_1 = gl.createFramebuffer();
+  frameBuff_1 = gl.createFramebuffer();  // global for weather stations (station-local STP)
 
   const curlFrameBuff = gl.createFramebuffer();
   const vortForceFrameBuff = gl.createFramebuffer();
