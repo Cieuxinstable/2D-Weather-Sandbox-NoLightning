@@ -557,6 +557,13 @@
             background: none;
         }
 
+        .sounding-title {
+            margin: 0 0 0.5rem 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            min-height: 1.3em;
+        }
+
         .sounding-status {
             min-height: 1.4em;
             font-size: 0.95rem;
@@ -680,8 +687,11 @@
                         <p id="soundingStatus" class="sounding-status"></p>
                     </div>
                 </div>
-                <img style="float: left; height: 500px;" id="soundingPreview"
-                    alt="Sounding not available, Please select a different time.">
+                <div style="float: left;">
+                    <h4 id="soundingTitle" class="sounding-title"></h4>
+                    <img style="height: 480px;" id="soundingPreview"
+                        alt="Sounding not available, Please select a different time.">
+                </div>
             </div>
         </div>
 

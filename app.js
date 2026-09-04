@@ -125,17 +125,45 @@ async function scrapeTableData(url)
   }
 }
 
+function soundingTableUrl(stationID, timeStamp) { return 'https://www.meteociel.fr/cartes_obs/sondage_display.php?id=' + stationID + '&map=4&date=' + timeStamp; }
+
+// A real sounding table has a modest number of discrete mandatory pressure levels (typically a couple
+// dozen) listed in strictly increasing pressure order (index 0 = top of atmosphere down to the surface).
+// This is 'p', not 'alt': the reported geopotential height can have minor local quirks near the top of
+// the sounding on real data (harmless there since the sim never reaches that high), so pressure is the
+// reliable invariant to check. meteociel occasionally serves a fallback/error page for a station with no
+// observation at the requested date/hour, and scrapeTableData's `table:nth-of-type(2)` selector can then
+// latch onto an unrelated, much larger table elsewhere on that page -- this rejects results that don't
+// look like an actual sounding, rather than silently feeding bad data into the sim.
+function isPlausibleSoundingTable(table)
+{
+  if (!table || table.length < 2 || table.length > 200)
+    return false;
+
+  for (let i = 1; i < table.length; i++) {
+    if (table[i].p <= table[i - 1].p)
+      return false;
+  }
+
+  return true;
+}
+
+async function loadSoundingTable(stationID, timeStamp)
+{
+  const table = await scrapeTableData(soundingTableUrl(stationID, timeStamp));
+  return isPlausibleSoundingTable(table) ? table : null;
+}
+
 async function loadSounding(stationID, timeStamp, isStale = () => false)
 {
 
   const imgMapType = 1; // 0 = large classic emagram   1 = small emagram
   const graphPageUrl = 'https://www.meteociel.fr/cartes_obs/sondage_display.php?id=' + stationID + '&map=' + imgMapType + '&date=' + timeStamp;
-  const tablePageUrl = 'https://www.meteociel.fr/cartes_obs/sondage_display.php?id=' + stationID + '&map=4&date=' + timeStamp;
 
   const SoundingGraphImgUrl = await getSoundingGraphImgUrl(graphPageUrl);
 
   if (isStale()) // a newer request already superseded this one, or #IntroScreen (and #soundingPreview with it) was already torn down
-    return scrapeTableData(tablePageUrl);
+    return loadSoundingTable(stationID, timeStamp);
 
   const soundingImgEl = document.getElementById('soundingPreview');
   if (soundingImgEl)
@@ -143,7 +171,86 @@ async function loadSounding(stationID, timeStamp, isStale = () => false)
 
   // console.log(graphPageUrl, SoundingGraphImgUrl, tablePageUrl);
 
-  return scrapeTableData(tablePageUrl);
+  return loadSoundingTable(stationID, timeStamp);
+}
+
+// Linearly interpolates a station's raw sounding table to an arbitrary altitude, clamping at the top/
+// bottom of its range. Assumes `table` is sorted the same way scrapeTableData() produces it (descending
+// altitude, matching rawSoundingToSimSounding()'s own assumption below).
+function interpolateTableAtAltitude(table, targetAlt)
+{
+  if (targetAlt >= table[0].alt)
+    return table[0];
+  if (targetAlt <= table[table.length - 1].alt)
+    return table[table.length - 1];
+
+  for (let i = 0; i < table.length - 1; i++) {
+    const upper = table[i], lower = table[i + 1];
+    if (upper.alt >= targetAlt && targetAlt >= lower.alt) {
+      const t = (upper.alt - targetAlt) / (upper.alt - lower.alt); // 0 at upper, 1 at lower
+      return mixGeneric(upper, lower, t, {clamp : true});
+    }
+  }
+
+  return table[table.length - 1];
+}
+
+// Blends several nearby real stations' soundings into one synthetic profile for a point that has no
+// station of its own -- inverse-distance-weighted at each altitude level of the closest station's own
+// grid (used as the common reference so the result doesn't depend on an arbitrary separate grid).
+// `entries`: [{table, distanceKm}, ...], already fetched and non-empty.
+function blendSoundingTables(entries)
+{
+  if (entries.length === 1)
+    return entries[0].table;
+
+  const weighted = entries.map(e => ({table : e.table, weight : 1 / (e.distanceKm + 1)})); // +1 km avoids a divide-by-zero if the point sits exactly on a station
+  const totalWeight = weighted.reduce((sum, w) => sum + w.weight, 0);
+
+  const reference = weighted.reduce((best, w) => (w.weight > best.weight ? w : best));
+
+  return reference.table.map(refRow => {
+    let t = 0, tw = 0, td = 0, rh = 0, p = 0;
+    let velX = 0, velY = 0; // wind blended as a vector (u/v-style), not by naively averaging speed and compass angle separately
+
+    for (const {table, weight} of weighted) {
+      const row = table === reference.table ? refRow : interpolateTableAtAltitude(table, refRow.alt);
+      const w = weight / totalWeight;
+
+      t += row.t * w;
+      tw += row.tw * w;
+      td += row.td * w;
+      rh += row.rh * w;
+      p += row.p * w;
+      velX += row.vel * Math.sin(row.angle * degToRad) * w;
+      velY += row.vel * Math.cos(row.angle * degToRad) * w;
+    }
+
+    const vel = Math.hypot(velX, velY);
+    const angle = (Math.atan2(velX, velY) / degToRad + 360) % 360;
+
+    return {alt : refRow.alt, p, t, tw, td, rh, vel, angle};
+  });
+}
+
+// Fetches and blends the sounding for an arbitrary lat/lon that isn't itself a real station (see
+// findNearestStations()/blendSoundingTables()). Returns null if superseded by a newer request.
+async function loadInterpolatedSounding(lat, lon, timeStamp, isStale = () => false)
+{
+  const NUM_STATIONS = 3;
+  const nearest = findNearestStations(lat, lon, NUM_STATIONS);
+
+  const tables = await Promise.all(nearest.map(n => loadSoundingTable(soundingStations[n.key].id, timeStamp)));
+
+  if (isStale())
+    return null;
+
+  const entries = nearest.map((n, i) => ({table : tables[i], distanceKm : n.distanceKm})).filter(e => e.table && e.table.length > 0);
+
+  if (entries.length === 0)
+    throw new Error('Aucune donnée de sondage disponible près de ce point');
+
+  return blendSoundingTables(entries);
 }
 
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
@@ -304,22 +411,17 @@ function haversineDistanceKm(lat1, lon1, lat2, lon2)
 }
 
 // Real radiosonde soundings only exist at a sparse set of fixed launch sites worldwide (soundingStations
-// above), so an arbitrary searched city can't have its own directly-observed profile -- this finds
-// whichever of those real stations is geographically closest, to use as the best available stand-in.
-function findNearestStation(lat, lon)
+// above), so an arbitrary searched city can't have its own directly-observed profile. Rather than just
+// substituting the single nearest station's data wholesale (which would misrepresent a possibly-distant
+// city as if it were that station), this returns the `count` closest ones sorted by distance, so their
+// profiles can be inverse-distance-weighted together into an interpolated estimate for the exact point
+// (see blendSoundingTables()).
+function findNearestStations(lat, lon, count)
 {
-  let nearestKey = null;
-  let nearestDist = Infinity;
-
-  for (const [key, station] of Object.entries(soundingStations)) {
-    const dist = haversineDistanceKm(lat, lon, station.lat, station.lon);
-    if (dist < nearestDist) {
-      nearestDist = dist;
-      nearestKey = key;
-    }
-  }
-
-  return {key : nearestKey, distanceKm : nearestDist};
+  return Object.entries(soundingStations)
+      .map(([key, station]) => ({key, distanceKm : haversineDistanceKm(lat, lon, station.lat, station.lon)}))
+      .sort((a, b) => a.distanceKm - b.distanceKm)
+      .slice(0, count);
 }
 
 function createStationSelect()
@@ -335,6 +437,7 @@ function createStationSelect()
   select.value = 10868;
 
   select.onchange = function() {
+    geocodedCity = null; // picking a preset station directly always overrides any active custom-location search
     startLatitude = Object.values(soundingStations)[select.selectedIndex].lat;
     prepareSounding();
   };
@@ -348,20 +451,21 @@ function createStationSelect()
   return select;
 }
 
-// Set by the global city search (see selectGeocodedCity() below) to override the plain station name in
-// prepareSounding()'s status feedback with something like "Lyon, France -- sondage le plus proche :
-// Milan (280 km)". Consumed (and cleared) the next time prepareSounding() runs, so it never lingers
-// after the user goes back to picking a station directly.
-var selectedCityLabel = null;
+// Set by the global city search (see selectGeocodedCity() below): while non-null, prepareSounding()
+// generates an interpolated profile for this exact lat/lon (see loadInterpolatedSounding()) instead of
+// loading a single preset station's data. Persists across date/hour changes -- it's cleared only when the
+// user picks a preset station directly (createStationSelect()'s onchange), so re-running prepareSounding()
+// for a new date on the same searched city still targets that same exact point.
+var geocodedCity = null; // {lat, lon, label}
 
 // City search for the sounding station picker: sits alongside the existing <select id="stationSelect">
 // (never replaces it) and layers two lookup paths on top of it as the user types --
 //  1) an instant, local, offline filter of that dropdown's own preset stations, with auto-load as soon
 //     as the typed text exactly matches one of their names (case-insensitive);
 //  2) a debounced global geocoding lookup (OpenStreetMap Nominatim) so ANY real city/commune can be
-//     searched, not just the ~50 preset radiosonde launch sites. Real soundings only exist at those fixed
-//     sites, so picking a geocoded city loads the nearest one's real observed profile as the closest
-//     available stand-in, while still using the searched city's own real latitude for solar-angle physics.
+//     searched, not just the ~50 preset radiosonde launch sites -- picking one of those results generates
+//     an interpolated profile for that exact point (see loadInterpolatedSounding()), rather than
+//     substituting a single nearby station's data wholesale.
 function setupStationSearch()
 {
   const searchInput = document.getElementById('stationSearchInput');
@@ -384,7 +488,7 @@ function setupStationSearch()
       return false;
 
     stationSelector.value = soundingStations[key].id;
-    stationSelector.dispatchEvent(new Event('change', {bubbles : true})); // reuses the existing onchange: sets startLatitude and calls prepareSounding()
+    stationSelector.dispatchEvent(new Event('change', {bubbles : true})); // reuses the existing onchange: clears geocodedCity, sets startLatitude, calls prepareSounding()
     return true;
   }
 
@@ -410,16 +514,13 @@ function setupStationSearch()
     const country = address.country || '';
     const fullLabel = country ? cityName + ', ' + country : cityName;
 
-    const nearest = findNearestStation(lat, lon);
-
-    selectedCityLabel = fullLabel + ' — sondage le plus proche : ' + nearest.key + ' (' + Math.round(nearest.distanceKm) + ' km)';
     searchInput.value = fullLabel;
-
     for (const option of stationSelector.options) option.hidden = false; // clear any leftover local-filter narrowing
 
-    stationSelector.value = soundingStations[nearest.key].id;
-    stationSelector.dispatchEvent(new Event('change', {bubbles : true})); // sets startLatitude (to the substitute station's) and calls prepareSounding()
-    startLatitude = lat; // override with the searched city's own real latitude -- more accurate for solar-angle/day-length physics than the substitute station's
+    geocodedCity = {lat, lon, label : fullLabel};
+    startLatitude = lat; // the searched city's own real latitude, used directly for solar-angle/day-length physics
+
+    prepareSounding();
   }
 
   function renderEmptyMessage(text)
@@ -1955,10 +2056,59 @@ async function prepareSounding()
 
   epochTime += hour * 3600;
 
-  const stationOption = stationSelector.options[stationSelector.selectedIndex];
   const statusEl = document.getElementById('soundingStatus');
-  const cityName = selectedCityLabel || stationOption.textContent;
-  selectedCityLabel = null; // one-shot: consumed here so a later direct station pick shows its own plain name again
+  const titleEl = document.getElementById('soundingTitle');
+  const imgEl = document.getElementById('soundingPreview');
+
+  // A searched city with no preset station of its own: generate an interpolated profile for its exact
+  // coordinates instead of the single-station path below (see loadInterpolatedSounding()).
+  if (geocodedCity) {
+    const cityName = geocodedCity.label;
+
+    if (titleEl)
+      titleEl.textContent = '📍 ' + cityName;
+
+    if (imgEl) { // no single real station image represents an interpolated point -- don't show a misleading one
+      imgEl.removeAttribute('src');
+      imgEl.alt = 'Profil interpolé : pas d\'image de sondage réelle pour un point personnalisé';
+    }
+
+    if (statusEl) {
+      statusEl.textContent = 'Génération du profil interpolé pour ' + cityName + '...';
+      statusEl.className = 'sounding-status loading';
+    }
+
+    try {
+      const blended = await loadInterpolatedSounding(geocodedCity.lat, geocodedCity.lon, epochTime, () => requestId !== prepareSoundingRequestId);
+
+      if (requestId !== prepareSoundingRequestId)
+        return; // a newer call already superseded this one -- drop this stale result
+
+      soundingData = blended;
+
+      if (statusEl) {
+        statusEl.textContent = '✓ Profil interpolé généré — ' + cityName;
+        statusEl.className = 'sounding-status success';
+      }
+    } catch (err) {
+      console.error('Erreur génération du sondage interpolé:', err);
+
+      if (requestId !== prepareSoundingRequestId)
+        return;
+
+      if (statusEl) {
+        statusEl.textContent = '⚠ Échec de la génération du sondage, réessayez.';
+        statusEl.className = 'sounding-status error';
+      }
+    }
+    return;
+  }
+
+  const stationOption = stationSelector.options[stationSelector.selectedIndex];
+  const cityName = stationOption.textContent;
+
+  if (titleEl)
+    titleEl.textContent = cityName;
 
   if (statusEl) {
     statusEl.textContent = 'Chargement du sondage pour ' + cityName + '...';
@@ -1970,6 +2120,9 @@ async function prepareSounding()
 
     if (requestId !== prepareSoundingRequestId)
       return; // a newer call (e.g. the user kept typing) already superseded this one -- drop this stale result
+
+    if (!result) // no observation for this station at this date/hour, or the scraped page didn't look like a real sounding
+      throw new Error('Aucune donnée de sondage valide pour cette station à cette date/heure');
 
     soundingData = result;
 
