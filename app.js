@@ -856,12 +856,14 @@ const guiControls_default = {
   twelveHourClock : false, // only for display.  false = metric
   lengthUnit : 'LENGTH_UNIT_METRIC',
   tempUnit : 'TEMP_UNIT_C',
-  windUnit : 'SPEED_UNIT_KMH',
+  speedUnit : 'SPEED_UNIT_KMH',
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
 
-var guiControls;
+// Starts out as the defaults (rather than undefined) so unit-formatting helpers (printTemp() etc.) work
+// on the setup screen too -- setupDatGui() fully replaces this once mainScript() actually runs.
+var guiControls = guiControls_default;
 
 var displayVectorField = false;
 
@@ -2112,6 +2114,347 @@ function setLoadingBar()
   });
 }
 
+// ===================== Setup-screen émagramme (custom/interpolated points) =====================
+//
+// meteociel only has a real graph image for its own fixed stations, so a searched city with no station
+// of its own (see loadInterpolatedSounding()) has nothing to fetch an image for. Rather than showing a
+// broken <img>, this draws the same kind of skew-T-style chart directly from the raw sounding table on
+// #soundingCanvas: temperature/dewpoint curves, the lifted parcel path with CAPE/CIN shading, wind barbs,
+// a small hodograph, and the CAPE/CIN/LCL/shear/STP readout. Runs at setup time, before mainScript() /
+// guiControls exist, so it uses guiControls_default's physics constants directly instead.
+
+// Lifts a surface parcel through the RAW sounding table (real altitudes, not sim grid cells), using the
+// exact same dry/moist adiabat model as the in-game sounding graph (calcParcelIndices further up), and
+// records the path so it can be drawn. `table`: ascending pressure order (index0 = top, last = surface).
+function calcParcelIndicesFromTable(table)
+{
+  const surface = table[table.length - 1];
+  const water = maxWater(CtoK(surface.td)); // total water carried by the parcel, conserved during ascent
+
+  let prevTempC = surface.t;
+  let prevCloudWater = Math.max(water - maxWater(CtoK(prevTempC)), 0.0);
+  let prevAlt = surface.alt;
+
+  let CAPE = 0.0, CIN = 0.0;
+  let LCL_height = table[0].alt; // never saturates within the table -> effectively above the whole sounding
+  let foundLCL = false;
+  let sawPositiveBuoyancy = false;
+
+  const parcelPath = [ {alt : surface.alt, t : surface.t, saturated : false} ];
+
+  for (let i = table.length - 2; i >= 0; i--) {
+    const level = table[i];
+    if (level.alt > guiControls_default.simHeight) // matches calcParcelIndices' own integration ceiling (bounded by sim_res_y / simHeight there); without this the raw table's much taller range (up to ~25km) inflates CAPE with spurious upper-atmosphere buoyancy the real sim never integrates over
+      break;
+    const dz = level.alt - prevAlt; // meters; should be positive (higher up the table)
+    if (dz <= 0)                    // guards against the raw table's known near-top altitude quirk (see isPlausibleSoundingTable)
+      continue;
+
+    const drylapseC = -(dz * guiControls_default.dryLapseRate) / 1000.0;
+
+    const cloudWaterAfterDry = Math.max(water - maxWater(CtoK(prevTempC + drylapseC)), 0.0);
+    const dWt = (cloudWaterAfterDry - prevCloudWater) * guiControls_default.evapHeat;
+    const TparcelC = prevTempC + dT_saturated(drylapseC, dWt);
+
+    if (!foundLCL && cloudWaterAfterDry > 0.0) {
+      foundLCL = true;
+      LCL_height = level.alt;
+    }
+
+    const work = gravity * ((TparcelC - level.t) / CtoK(level.t)) * dz; // buoyant work per unit mass over this layer
+
+    if (TparcelC > level.t) {
+      CAPE += work;
+      sawPositiveBuoyancy = true;
+    } else if (!sawPositiveBuoyancy) {
+      CIN += work; // negative: layers below the level of free convection
+    }
+
+    parcelPath.push({alt : level.alt, t : TparcelC, saturated : foundLCL});
+
+    prevTempC = TparcelC;
+    prevCloudWater = Math.max(water - maxWater(CtoK(prevTempC)), 0.0);
+    prevAlt = level.alt;
+  }
+
+  return {CAPE, CIN, LCL_height, parcelPath};
+}
+
+// Bulk (speed-only) wind shear between the surface and 1km/6km AGL, sampled straight off the raw table
+// via the same altitude interpolation used to blend stations together. Projects onto the sim's single
+// horizontal axis (vel * cos(angle)) exactly like rawSoundingToSimSounding() will once the sim actually
+// starts, so this setup-screen preview stays consistent with the real thing.
+function calcBulkShearFromTable(table)
+{
+  const surfaceAlt = table[table.length - 1].alt;
+
+  const uAt = (targetAlt) => {
+    const row = interpolateTableAtAltitude(table, targetAlt);
+    return (row.vel * Math.cos(row.angle * degToRad)) / 3.6; // km/h -> m/s
+  };
+
+  const uSurface = uAt(surfaceAlt);
+
+  return {shear01 : Math.abs(uAt(surfaceAlt + 1000) - uSurface), shear06 : Math.abs(uAt(surfaceAlt + 6000) - uSurface)};
+}
+
+function computeSoundingIndicesFromTable(table)
+{
+  const parcel = calcParcelIndicesFromTable(table);
+  const shear = calcBulkShearFromTable(table);
+  const STP = calcSTP(parcel.CAPE, parcel.CIN, parcel.LCL_height, shear.shear06, shear.shear01);
+
+  return {CAPE : parcel.CAPE, CIN : parcel.CIN, LCL_height : parcel.LCL_height, parcelPath : parcel.parcelPath, shear01 : shear.shear01, shear06 : shear.shear06, STP};
+}
+
+// Simplified meteorological wind barb: a shaft pointing toward where the wind comes FROM, with pennants
+// (filled triangles, 50kt), full barbs (10kt) and a half-barb (5kt) ticked off the tip inward.
+function drawWindBarb(ctx, x, y, speedKmh, angleDeg, color)
+{
+  const speedKt = speedKmh / 1.852;
+  if (speedKt < 2.5) { // calm: just a small circle
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.stroke();
+    return;
+  }
+
+  const dirRad = angleDeg * degToRad;
+  const dx = Math.sin(dirRad), dy = -Math.cos(dirRad); // screen-space unit vector toward where the wind comes from (north = up)
+  const px = -dy, py = dx;                             // perpendicular, for the barb ticks
+
+  const shaftLen = 24;
+  const x2 = x + dx * shaftLen, y2 = y + dy * shaftLen;
+
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+
+  let remaining = Math.round(speedKt / 5) * 5;
+  let pos = 1.0;    // fraction along the shaft, from the tip (1.0) toward the base (0)
+  const step = 0.16;
+  const tickLen = 8;
+
+  while (remaining >= 50) {
+    const bx = x + dx * shaftLen * pos, by = y + dy * shaftLen * pos;
+    const bx2 = x + dx * shaftLen * (pos - step * 1.4), by2 = y + dy * shaftLen * (pos - step * 1.4);
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx2, by2);
+    ctx.lineTo(bx + px * tickLen, by + py * tickLen);
+    ctx.closePath();
+    ctx.fill();
+    remaining -= 50;
+    pos -= step * 1.6;
+  }
+  while (remaining >= 10) {
+    const bx = x + dx * shaftLen * pos, by = y + dy * shaftLen * pos;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + px * tickLen, by + py * tickLen);
+    ctx.stroke();
+    remaining -= 10;
+    pos -= step;
+  }
+  if (remaining >= 5) {
+    const bx = x + dx * shaftLen * pos, by = y + dy * shaftLen * pos;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + px * tickLen * 0.55, by + py * tickLen * 0.55);
+    ctx.stroke();
+  }
+}
+
+// Draws the full setup-screen émagramme for a custom/interpolated point onto #soundingCanvas: skew
+// isotherms, altitude gridlines, environment T/Td curves, the lifted parcel path with CAPE (red) / CIN
+// (blue) shading between it and the environment, wind barbs, a small hodograph inset, and the numeric
+// CAPE/CIN/LCL/shear/STP readout. `table`: same shape loadInterpolatedSounding() returns.
+function drawSetupEmagram(table, meta)
+{
+  const canvas = document.getElementById('soundingCanvas');
+  if (!canvas || !table || table.length < 2)
+    return;
+
+  // Match the canvas's drawing-buffer resolution to its actual CSS-rendered size so it stays crisp and
+  // fills whatever width the layout gives it, instead of stretching a fixed-resolution raster.
+  const cssWidth = canvas.clientWidth || 620;
+  canvas.width = cssWidth;
+  const width = canvas.width, height = canvas.height;
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#00000055';
+  ctx.fillRect(0, 0, width, height);
+
+  const marginBottom = 34, marginRight = 60;
+  const graphWidth = width - marginRight, graphHeight = height - marginBottom;
+  const maxAlt = 16000; // caps the view to the troposphere/lower stratosphere where CAPE/CIN/LCL actually live
+
+  const T_to_X = (T, screenY) => (T * 0.0115 + 1.18 - (screenY / graphHeight) * 0.8) * graphWidth;
+  const alt_to_Y = (alt) => clamp(map_range(alt, maxAlt, 0, 0, graphHeight), 0, graphHeight);
+
+  // Isotherms
+  ctx.strokeStyle = '#964B00';
+  ctx.lineWidth = 1.0;
+  ctx.font = '12px Arial';
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  for (let T = -80.0; T <= 50.0; T += 10.0) {
+    ctx.moveTo(T_to_X(T, graphHeight), graphHeight);
+    ctx.lineTo(T_to_X(T, 0), 0);
+    if (T >= -30.0)
+      ctx.fillText(printTemp(Math.round(T)), T_to_X(T, graphHeight) - 18, height - 8);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = '#CC8844'; // 0C line, thicker
+  ctx.lineWidth = 2.0;
+  ctx.beginPath();
+  ctx.moveTo(T_to_X(0, graphHeight), graphHeight);
+  ctx.lineTo(T_to_X(0, 0), 0);
+  ctx.stroke();
+
+  // Altitude gridlines
+  ctx.strokeStyle = '#FFFFFF22';
+  ctx.lineWidth = 1.0;
+  ctx.fillStyle = '#FFFFFFAA';
+  for (let alt = 0; alt <= maxAlt; alt += 2000) {
+    const y = alt_to_Y(alt);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(graphWidth, y);
+    ctx.stroke();
+    ctx.fillText(printAltitude(alt), 4, y - 3);
+  }
+
+  const indices = computeSoundingIndicesFromTable(table);
+
+  // CAPE (red) / CIN (blue) shading between the parcel path and the environment, layer by layer. Looks
+  // the environment row up by altitude (rather than assuming parcelPath[i] lines up positionally with
+  // table[length-1-i]) since the parcel loop can skip or stop short of the raw table -- it breaks once it
+  // reaches guiControls_default.simHeight, and skips the raw table's known near-top non-monotonic quirk.
+  for (let i = 1; i < indices.parcelPath.length; i++) {
+    const prevParcel = indices.parcelPath[i - 1], curParcel = indices.parcelPath[i];
+    const envRow = interpolateTableAtAltitude(table, curParcel.alt);
+    const prevEnvRow = interpolateTableAtAltitude(table, prevParcel.alt);
+
+    const buoyant = curParcel.t > envRow.t;
+    ctx.fillStyle = buoyant ? 'rgba(255, 60, 60, 0.28)' : 'rgba(60, 120, 255, 0.22)';
+
+    const y1 = alt_to_Y(prevParcel.alt), y2 = alt_to_Y(curParcel.alt);
+    ctx.beginPath();
+    ctx.moveTo(T_to_X(prevParcel.t, y1), y1);
+    ctx.lineTo(T_to_X(curParcel.t, y2), y2);
+    ctx.lineTo(T_to_X(envRow.t, y2), y2);
+    ctx.lineTo(T_to_X(prevEnvRow.t, y1), y1);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Environment temperature curve
+  ctx.strokeStyle = '#FF0000';
+  ctx.lineWidth = 2.0;
+  ctx.beginPath();
+  for (let i = table.length - 1; i >= 0; i--) {
+    const y = alt_to_Y(table[i].alt);
+    if (i == table.length - 1)
+      ctx.moveTo(T_to_X(table[i].t, y), y);
+    else
+      ctx.lineTo(T_to_X(table[i].t, y), y);
+  }
+  ctx.stroke();
+
+  // Environment dewpoint curve
+  ctx.strokeStyle = '#0055FF';
+  ctx.lineWidth = 2.0;
+  ctx.beginPath();
+  for (let i = table.length - 1; i >= 0; i--) {
+    const y = alt_to_Y(table[i].alt);
+    if (i == table.length - 1)
+      ctx.moveTo(T_to_X(table[i].td, y), y);
+    else
+      ctx.lineTo(T_to_X(table[i].td, y), y);
+  }
+  ctx.stroke();
+
+  // Parcel path (dry adiabat in dark green, saturated/moist adiabat in bright green)
+  ctx.lineWidth = 2.0;
+  for (let i = 1; i < indices.parcelPath.length; i++) {
+    const a = indices.parcelPath[i - 1], b = indices.parcelPath[i];
+    ctx.strokeStyle = b.saturated ? '#00FF00' : '#008800';
+    ctx.beginPath();
+    ctx.moveTo(T_to_X(a.t, alt_to_Y(a.alt)), alt_to_Y(a.alt));
+    ctx.lineTo(T_to_X(b.t, alt_to_Y(b.alt)), alt_to_Y(b.alt));
+    ctx.stroke();
+  }
+
+  // Wind barbs along the right margin
+  for (let i = table.length - 1; i >= 0; i--) {
+    const row = table[i];
+    if (row.alt > maxAlt)
+      continue;
+    const y = alt_to_Y(row.alt);
+    drawWindBarb(ctx, graphWidth + 26, y, row.vel, row.angle, '#CCCCCC');
+  }
+
+  // Hodograph inset (top-right): u/v wind components by height, connected in altitude order
+  const hodoSize = 130, hodoX = width - hodoSize - 8, hodoY = 8, hodoR = hodoSize / 2 - 14;
+  const hodoCenterX = hodoX + hodoSize / 2, hodoCenterY = hodoY + hodoSize / 2;
+
+  ctx.fillStyle = '#00000088';
+  ctx.fillRect(hodoX, hodoY, hodoSize, hodoSize);
+  ctx.strokeStyle = '#FFFFFF33';
+  ctx.beginPath();
+  ctx.arc(hodoCenterX, hodoCenterY, hodoR, 0, Math.PI * 2);
+  ctx.moveTo(hodoX, hodoCenterY);
+  ctx.lineTo(hodoX + hodoSize, hodoCenterY);
+  ctx.moveTo(hodoCenterX, hodoY);
+  ctx.lineTo(hodoCenterX, hodoY + hodoSize);
+  ctx.stroke();
+
+  const maxSpeedForHodo = Math.max(...table.map(r => r.vel), 10);
+  ctx.strokeStyle = '#FFDD55';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = table.length - 1; i >= 0; i--) {
+    const row = table[i];
+    if (row.alt > maxAlt)
+      continue;
+    const scale = hodoR / maxSpeedForHodo;
+    const u = row.vel * Math.sin(row.angle * degToRad) * scale;
+    const v = row.vel * Math.cos(row.angle * degToRad) * scale;
+    const px = hodoCenterX + u, py = hodoCenterY - v;
+    if (i == table.length - 1)
+      ctx.moveTo(px, py);
+    else
+      ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  ctx.fillStyle = '#FFDD55AA';
+  ctx.font = '10px Arial';
+  ctx.fillText('Hodographe', hodoX + 4, hodoY + hodoSize - 4);
+
+  // Numeric readout
+  ctx.font = '16px Arial';
+  ctx.fillStyle = 'yellow';
+  ctx.fillText('SBCAPE: ' + indices.CAPE.toFixed(0) + ' J/kg', 10, 20);
+  ctx.fillText('CIN: ' + indices.CIN.toFixed(0) + ' J/kg', 10, 40);
+  ctx.fillText('LCL: ' + printAltitude(indices.LCL_height), 10, 60);
+  ctx.fillText('Shear 0-6km: ' + printVelocity(indices.shear06), 10, 80);
+  ctx.fillStyle = indices.STP >= 1.0 ? '#FF4444' : 'yellow';
+  ctx.fillText('STP: ' + indices.STP.toFixed(2), 10, 100);
+
+  if (meta && meta.isSynthetic) {
+    ctx.fillStyle = '#f0c05a';
+    ctx.font = '13px Arial';
+    ctx.fillText('≈ estimation synthétique (aucune donnée réelle disponible)', 10, height - 8);
+  }
+}
+
 var soundingData;
 
 var prepareSoundingRequestId = 0; // guards against overlapping calls (e.g. fast typing in the city search box) resolving out of order
@@ -2132,19 +2475,24 @@ async function prepareSounding()
   const statusEl = document.getElementById('soundingStatus');
   const titleEl = document.getElementById('soundingTitle');
   const imgEl = document.getElementById('soundingPreview');
+  const canvasEl = document.getElementById('soundingCanvas');
 
   // A searched city with no preset station of its own: generate an interpolated profile for its exact
-  // coordinates instead of the single-station path below (see loadInterpolatedSounding()).
+  // coordinates instead of the single-station path below (see loadInterpolatedSounding()). There is no
+  // real station image for a custom point, so the <img> stays fully hidden (not just an empty src, which
+  // still rendered as a broken-image icon) and #soundingCanvas draws the profile directly instead.
   if (geocodedCity) {
     const cityName = geocodedCity.label;
 
     if (titleEl)
       titleEl.textContent = '📍 ' + cityName;
 
-    if (imgEl) { // no single real station image represents an interpolated point -- don't show a misleading one
+    if (imgEl) {
+      imgEl.hidden = true;
       imgEl.removeAttribute('src');
-      imgEl.alt = 'Profil interpolé : pas d\'image de sondage réelle pour un point personnalisé';
     }
+    if (canvasEl)
+      canvasEl.hidden = false;
 
     if (statusEl) {
       statusEl.textContent = 'Génération du profil interpolé pour ' + cityName + '...';
@@ -2158,6 +2506,7 @@ async function prepareSounding()
         return; // a newer call already superseded this one -- drop this stale result
 
       soundingData = result.table;
+      drawSetupEmagram(result.table, {isSynthetic : result.isSynthetic});
 
       if (statusEl) {
         // loadInterpolatedSounding() never fails outright: it either blends real nearby stations, or --
@@ -2182,6 +2531,12 @@ async function prepareSounding()
     }
     return;
   }
+
+  // Direct station pick: restore the real meteociel image (in case a previous custom-point search had hidden it).
+  if (imgEl)
+    imgEl.hidden = false;
+  if (canvasEl)
+    canvasEl.hidden = true;
 
   const stationOption = stationSelector.options[stationSelector.selectedIndex];
   const cityName = stationOption.textContent;

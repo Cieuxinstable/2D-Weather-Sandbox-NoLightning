@@ -564,6 +564,20 @@
             min-height: 1.3em;
         }
 
+        #soundingDisplayCol {
+            width: 100%;
+            max-width: 640px;
+        }
+
+        .sounding-canvas {
+            display: block;
+            width: 100%;
+            max-width: 620px;
+            height: 480px;
+            border-radius: var(--border-radius);
+            background: #00000055;
+        }
+
         .sounding-status {
             min-height: 1.4em;
             font-size: 0.95rem;
@@ -691,10 +705,11 @@
                         <p id="soundingStatus" class="sounding-status"></p>
                     </div>
                 </div>
-                <div style="float: left;">
+                <div style="float: left; overflow: hidden;" id="soundingDisplayCol">
                     <h4 id="soundingTitle" class="sounding-title"></h4>
                     <img style="height: 480px;" id="soundingPreview"
                         alt="Sounding not available, Please select a different time.">
+                    <canvas id="soundingCanvas" width="620" height="480" class="sounding-canvas" hidden></canvas>
                 </div>
             </div>
         </div>
