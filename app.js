@@ -233,24 +233,97 @@ function blendSoundingTables(entries)
   });
 }
 
+// Standard-atmosphere-style synthetic fallback: builds a physically-plausible (but NOT observational)
+// vertical profile from latitude and time of year alone, for when no real station data can be found
+// anywhere for the requested date/hour (very old/future dates, remote regions, or every nearby station's
+// archive simply missing that observation). This guarantees loadInterpolatedSounding() always returns a
+// usable, complete profile -- prepareSounding() labels it clearly as an estimate rather than a real
+// sondage. Pressure levels and table shape match the real scraped tables so it flows through the exact
+// same downstream code (rawSoundingToSimSounding, CAPE/CIN/STP) unmodified.
+function generateSyntheticSoundingTable(lat, timeStamp)
+{
+  const date = new Date(timeStamp * 1000);
+  const dayOfYear = (date - new Date(Date.UTC(date.getUTCFullYear(), 0, 0))) / 86400000;
+  const season = Math.cos((dayOfYear - 15) / 365 * 2 * Math.PI); // +1 near northern-hemisphere midwinter, -1 near midsummer
+
+  // Warmer near the equator, colder toward the poles; the seasonal swing flips sign with hemisphere, and
+  // fades to ~0 at the equator (no real seasons there).
+  const seasonalSwingC = 14 * -season * Math.sign(lat || 1) * clamp(Math.abs(lat) / 45, 0, 1);
+  // Clamped to a broad-but-sane global range: the raw latitude/season formula alone can run away to
+  // implausible extremes at high latitude in deep winter, which would then compound through the lapse
+  // rate below.
+  const surfaceTempC = clamp(27 - 0.55 * Math.abs(lat) + seasonalSwingC, -45, 42);
+
+  // Real-world tropopause temperature stays in a fairly narrow band (roughly -50 to -70C) almost
+  // everywhere on Earth, regardless of surface conditions -- clamped separately here rather than just
+  // lapsing the (already-clamped) surface estimate all the way up, which could otherwise still compound
+  // into an unrealistically cold upper profile at extreme latitude/season combinations.
+  const tropopauseTempC = clamp(surfaceTempC - 6.5 * 11, -70, -50);
+
+  const pressureLevels = [ 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 400, 500, 700, 850, 925, 1000 ];
+
+  return pressureLevels.map(p => {
+    // ICAO troposphere barometric formula, applied across the whole range as a rough estimate -- this is
+    // an explicitly-approximate fallback, not a multi-layer physical atmosphere model.
+    const alt = 44330 * (1 - Math.pow(p / 1013.25, 1 / 5.255));
+    const altKm = alt / 1000;
+
+    let t;
+    if (altKm <= 11)
+      t = surfaceTempC + (tropopauseTempC - surfaceTempC) * (altKm / 11); // lapses smoothly toward the (clamped) tropopause value, rather than a fixed 6.5C/km that could overshoot it
+    else if (altKm <= 20)
+      t = tropopauseTempC; // isothermal tropopause / lower-stratosphere band
+    else
+      t = tropopauseTempC + 1.0 * (altKm - 20); // slight stratospheric warming
+
+    const dewDepression = 5 + altKm * 3; // drier aloft
+    const td = t - dewDepression;
+    const rh = clamp(70 - altKm * 4, 2, 90);
+
+    const vel = 5 + 45 * Math.sin(clamp(altKm / 12, 0, 1) * Math.PI); // crude jet-stream-shaped profile, no real directional data to draw from
+    const angle = 270; // generic westerly flow
+
+    return {alt, p, t, tw : (t + td) / 2, td, rh, vel, angle};
+  });
+}
+
 // Fetches and blends the sounding for an arbitrary lat/lon that isn't itself a real station (see
-// findNearestStations()/blendSoundingTables()). Returns null if superseded by a newer request.
+// findNearestStations()/blendSoundingTables()). Widens the search if the closest few stations have no
+// data for this date/hour, and falls back to a synthetic estimate (generateSyntheticSoundingTable()) if
+// truly nothing real is available anywhere -- this never throws/fails, so the émagramme always has a
+// complete profile to render. Returns {table, isSynthetic}, or null if superseded by a newer request.
 async function loadInterpolatedSounding(lat, lon, timeStamp, isStale = () => false)
 {
-  const NUM_STATIONS = 3;
-  const nearest = findNearestStations(lat, lon, NUM_STATIONS);
+  const CLOSE_STATIONS = 3;
 
-  const tables = await Promise.all(nearest.map(n => loadSoundingTable(soundingStations[n.key].id, timeStamp)));
+  let nearest = findNearestStations(lat, lon, CLOSE_STATIONS);
+  let tables = await Promise.all(nearest.map(n => loadSoundingTable(soundingStations[n.key].id, timeStamp)));
 
   if (isStale())
     return null;
 
-  const entries = nearest.map((n, i) => ({table : tables[i], distanceKm : n.distanceKm})).filter(e => e.table && e.table.length > 0);
+  let entries = nearest.map((n, i) => ({table : tables[i], distanceKm : n.distanceKm})).filter(e => e.table && e.table.length > 0);
+
+  if (entries.length === 0) {
+    // None of the closest few had data for this date/hour -- widen to every known station before giving
+    // up on real data entirely.
+    nearest = findNearestStations(lat, lon, Object.keys(soundingStations).length);
+    tables = await Promise.all(nearest.map(n => loadSoundingTable(soundingStations[n.key].id, timeStamp)));
+
+    if (isStale())
+      return null;
+
+    entries = nearest.map((n, i) => ({table : tables[i], distanceKm : n.distanceKm})).filter(e => e.table && e.table.length > 0);
+  }
 
   if (entries.length === 0)
-    throw new Error('Aucune donnée de sondage disponible près de ce point');
+    return {table : generateSyntheticSoundingTable(lat, timeStamp), isSynthetic : true};
 
-  return blendSoundingTables(entries);
+  // Cap how many (and how far) contributing stations get blended in, even after widening the search --
+  // otherwise a station on the other side of the continent could end up diluting the result.
+  const usable = entries.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, CLOSE_STATIONS);
+
+  return {table : blendSoundingTables(usable), isSynthetic : false};
 }
 
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
@@ -2079,18 +2152,24 @@ async function prepareSounding()
     }
 
     try {
-      const blended = await loadInterpolatedSounding(geocodedCity.lat, geocodedCity.lon, epochTime, () => requestId !== prepareSoundingRequestId);
+      const result = await loadInterpolatedSounding(geocodedCity.lat, geocodedCity.lon, epochTime, () => requestId !== prepareSoundingRequestId);
 
       if (requestId !== prepareSoundingRequestId)
         return; // a newer call already superseded this one -- drop this stale result
 
-      soundingData = blended;
+      soundingData = result.table;
 
       if (statusEl) {
-        statusEl.textContent = '✓ Profil interpolé généré — ' + cityName;
-        statusEl.className = 'sounding-status success';
+        // loadInterpolatedSounding() never fails outright: it either blends real nearby stations, or --
+        // if truly none have data for this date/hour -- falls back to a clearly-labeled synthetic estimate.
+        statusEl.textContent = result.isSynthetic
+                                    ? '≈ Profil estimé (aucune donnée réelle disponible) — ' + cityName
+                                    : '✓ Profil interpolé généré — ' + cityName;
+        statusEl.className = result.isSynthetic ? 'sounding-status estimated' : 'sounding-status success';
       }
     } catch (err) {
+      // Only unexpected failures (network down, etc.) land here now -- "no station data nearby" no
+      // longer throws, it falls back to a synthetic estimate above instead.
       console.error('Erreur génération du sondage interpolé:', err);
 
       if (requestId !== prepareSoundingRequestId)
