@@ -230,65 +230,97 @@ function createPresetSelect()
   };
 }
 
+// lon values are representative (station city/region centroid, same precision level as the existing lat
+// values) -- used only to find the nearest real sounding station to an arbitrary searched city (see
+// findNearestStation()), not as survey-grade coordinates.
 const soundingStations = {
-  'Andoya' : {id : 1010, lat : 69.1144},
-  'Lapland' : {id : 2836, lat : 67.4160},
-  'Iceland' : {id : 4018, lat : 64.9631},
-  'Trondheim' : {id : 1241, lat : 63.4305},
-  'Helsinki' : {id : 2963, lat : 60.1699},
-  'Stavanger' : {id : 1415, lat : 58.9700},
-  'Gotland' : {id : 2591, lat : 57.6359},
-  'North Sea' : {id : 1400, lat : 56.5333},
-  'Moscow' : {id : 27730, lat : 55.7558},
-  'Gdańsk' : {id : 12120, lat : 54.3520},
-  'Greifswald' : {id : 10184, lat : 54.0833},
-  'Norderney' : {id : 10113, lat : 53.7000},
-  'Hamburg' : {id : 10035, lat : 53.5507},
-  'Nottingham' : {id : 3354, lat : 52.9500},
-  'Bergen(DE)' : {id : 10238, lat : 52.8092},
-  'Meppen' : {id : 10304, lat : 52.7928},
-  'Berlin' : {id : 10393, lat : 52.5235},
-  'Warsaw' : {id : 12374, lat : 52.2297},
-  'De Bilt' : {id : 6260, lat : 52.1085},
-  'Essen' : {id : 10410, lat : 51.4556},
-  'Wroclaw' : {id : 12425, lat : 51.1079},
-  'Brussels' : {id : 6458, lat : 50.8371},
-  'Meiningen' : {id : 10548, lat : 50.5678},
-  'Kraków' : {id : 12575, lat : 50.0647},
-  'Idar-Oberstein' : {id : 10618, lat : 49.7167},
-  'Nuremberg' : {id : 10771, lat : 49.4521},
-  'Paris' : {id : 7145, lat : 48.8567},
-  'Stuttgart' : {id : 10739, lat : 48.7758},
-  'Brest' : {id : 7110, lat : 48.3900},
-  'Vienna' : {id : 11035, lat : 48.2092},
-  'Altenstadt' : {id : 10954, lat : 48.3556},
-  'Munich' : {id : 10868, lat : 48.1333},
-  'peißenberg' : {id : 10962, lat : 47.7975},
-  'Insbruck' : {id : 11120, lat : 47.2692},
-  'Bern' : {id : 6610, lat : 46.9480},
-  'Udine' : {id : 16045, lat : 46.0713},
-  'Zagreb' : {id : 14240, lat : 45.8150},
-  'Milan' : {id : 16064, lat : 45.4642},
-  'Bordeaux' : {id : 7510, lat : 44.8378},
-  'Bologna' : {id : 16144, lat : 44.4968},
-  'Bucharest' : {id : 15420, lat : 44.4268},
-  'Cuneo' : {id : 16113, lat : 44.3843},
-  'Zadar' : {id : 14430, lat : 44.1194},
-  'Montpellier' : {id : 7645, lat : 43.6119},
-  'Barcelona' : {id : 8190, lat : 41.3851},
-  'Ajaccio' : {id : 7761, lat : 41.9192},
-  'Rome' : {id : 16245, lat : 41.9028},
-  'Istanbul' : {id : 17064, lat : 41.0082},
-  'Madrid' : {id : 8221, lat : 40.4168},
-  'Sardinia' : {id : 16546, lat : 40.1209},
-  'Lisbon' : {id : 8536, lat : 38.7223},
-  'Athens' : {id : 16716, lat : 37.9792},
-  'Sicily' : {id : 16429, lat : 37.6000},
-  'Krete' : {id : 16754, lat : 35.2401},
-  'Cyprus' : {id : 17607, lat : 35.1264},
-  'Palestine' : {id : 40179, lat : 32.0853},
-  'Cairo' : {id : 62378, lat : 30.0444},
+  'Andoya' : {id : 1010, lat : 69.1144, lon : 16.13},
+  'Lapland' : {id : 2836, lat : 67.4160, lon : 26.60},
+  'Iceland' : {id : 4018, lat : 64.9631, lon : -22.60},
+  'Trondheim' : {id : 1241, lat : 63.4305, lon : 10.92},
+  'Helsinki' : {id : 2963, lat : 60.1699, lon : 24.94},
+  'Stavanger' : {id : 1415, lat : 58.9700, lon : 5.73},
+  'Gotland' : {id : 2591, lat : 57.6359, lon : 18.35},
+  'North Sea' : {id : 1400, lat : 56.5333, lon : 3.00},
+  'Moscow' : {id : 27730, lat : 55.7558, lon : 37.62},
+  'Gdańsk' : {id : 12120, lat : 54.3520, lon : 18.65},
+  'Greifswald' : {id : 10184, lat : 54.0833, lon : 13.40},
+  'Norderney' : {id : 10113, lat : 53.7000, lon : 7.15},
+  'Hamburg' : {id : 10035, lat : 53.5507, lon : 9.99},
+  'Nottingham' : {id : 3354, lat : 52.9500, lon : -1.15},
+  'Bergen(DE)' : {id : 10238, lat : 52.8092, lon : 13.43},
+  'Meppen' : {id : 10304, lat : 52.7928, lon : 7.29},
+  'Berlin' : {id : 10393, lat : 52.5235, lon : 13.41},
+  'Warsaw' : {id : 12374, lat : 52.2297, lon : 21.01},
+  'De Bilt' : {id : 6260, lat : 52.1085, lon : 5.18},
+  'Essen' : {id : 10410, lat : 51.4556, lon : 6.97},
+  'Wroclaw' : {id : 12425, lat : 51.1079, lon : 17.03},
+  'Brussels' : {id : 6458, lat : 50.8371, lon : 4.35},
+  'Meiningen' : {id : 10548, lat : 50.5678, lon : 10.38},
+  'Kraków' : {id : 12575, lat : 50.0647, lon : 19.94},
+  'Idar-Oberstein' : {id : 10618, lat : 49.7167, lon : 7.33},
+  'Nuremberg' : {id : 10771, lat : 49.4521, lon : 11.08},
+  'Paris' : {id : 7145, lat : 48.8567, lon : 2.35},
+  'Stuttgart' : {id : 10739, lat : 48.7758, lon : 9.18},
+  'Brest' : {id : 7110, lat : 48.3900, lon : -4.49},
+  'Vienna' : {id : 11035, lat : 48.2092, lon : 16.37},
+  'Altenstadt' : {id : 10954, lat : 48.3556, lon : 10.87},
+  'Munich' : {id : 10868, lat : 48.1333, lon : 11.58},
+  'peißenberg' : {id : 10962, lat : 47.7975, lon : 11.07},
+  'Insbruck' : {id : 11120, lat : 47.2692, lon : 11.40},
+  'Bern' : {id : 6610, lat : 46.9480, lon : 7.45},
+  'Udine' : {id : 16045, lat : 46.0713, lon : 13.24},
+  'Zagreb' : {id : 14240, lat : 45.8150, lon : 15.98},
+  'Milan' : {id : 16064, lat : 45.4642, lon : 9.19},
+  'Bordeaux' : {id : 7510, lat : 44.8378, lon : -0.58},
+  'Bologna' : {id : 16144, lat : 44.4968, lon : 11.34},
+  'Bucharest' : {id : 15420, lat : 44.4268, lon : 26.10},
+  'Cuneo' : {id : 16113, lat : 44.3843, lon : 7.55},
+  'Zadar' : {id : 14430, lat : 44.1194, lon : 15.23},
+  'Montpellier' : {id : 7645, lat : 43.6119, lon : 3.88},
+  'Barcelona' : {id : 8190, lat : 41.3851, lon : 2.16},
+  'Ajaccio' : {id : 7761, lat : 41.9192, lon : 8.74},
+  'Rome' : {id : 16245, lat : 41.9028, lon : 12.50},
+  'Istanbul' : {id : 17064, lat : 41.0082, lon : 28.98},
+  'Madrid' : {id : 8221, lat : 40.4168, lon : -3.70},
+  'Sardinia' : {id : 16546, lat : 40.1209, lon : 9.00},
+  'Lisbon' : {id : 8536, lat : 38.7223, lon : -9.14},
+  'Athens' : {id : 16716, lat : 37.9792, lon : 23.73},
+  'Sicily' : {id : 16429, lat : 37.6000, lon : 12.50},
+  'Krete' : {id : 16754, lat : 35.2401, lon : 25.13},
+  'Cyprus' : {id : 17607, lat : 35.1264, lon : 33.40},
+  'Palestine' : {id : 40179, lat : 32.0853, lon : 34.81},
+  'Cairo' : {id : 62378, lat : 30.0444, lon : 31.24},
 };
+
+// Great-circle distance in km between two lat/lon points (haversine formula).
+function haversineDistanceKm(lat1, lon1, lat2, lon2)
+{
+  const R = 6371; // mean Earth radius, km
+  const dLat = (lat2 - lat1) * degToRad;
+  const dLon = (lon2 - lon1) * degToRad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * degToRad) * Math.cos(lat2 * degToRad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Real radiosonde soundings only exist at a sparse set of fixed launch sites worldwide (soundingStations
+// above), so an arbitrary searched city can't have its own directly-observed profile -- this finds
+// whichever of those real stations is geographically closest, to use as the best available stand-in.
+function findNearestStation(lat, lon)
+{
+  let nearestKey = null;
+  let nearestDist = Infinity;
+
+  for (const [key, station] of Object.entries(soundingStations)) {
+    const dist = haversineDistanceKm(lat, lon, station.lat, station.lon);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearestKey = key;
+    }
+  }
+
+  return {key : nearestKey, distanceKm : nearestDist};
+}
 
 function createStationSelect()
 {
@@ -316,15 +348,25 @@ function createStationSelect()
   return select;
 }
 
-// City search box for the sounding station picker: sits alongside the existing <select id="stationSelect">
-// (never replaces it) and does two things as the user types -- instantly filters that dropdown's options
-// down to matching city names, and auto-selects + loads the sounding as soon as the typed text exactly
-// matches one city (case-insensitive), reusing stationSelector's own onchange (set above) so behavior
-// stays identical to picking that city from the dropdown directly.
+// Set by the global city search (see selectGeocodedCity() below) to override the plain station name in
+// prepareSounding()'s status feedback with something like "Lyon, France -- sondage le plus proche :
+// Milan (280 km)". Consumed (and cleared) the next time prepareSounding() runs, so it never lingers
+// after the user goes back to picking a station directly.
+var selectedCityLabel = null;
+
+// City search for the sounding station picker: sits alongside the existing <select id="stationSelect">
+// (never replaces it) and layers two lookup paths on top of it as the user types --
+//  1) an instant, local, offline filter of that dropdown's own preset stations, with auto-load as soon
+//     as the typed text exactly matches one of their names (case-insensitive);
+//  2) a debounced global geocoding lookup (OpenStreetMap Nominatim) so ANY real city/commune can be
+//     searched, not just the ~50 preset radiosonde launch sites. Real soundings only exist at those fixed
+//     sites, so picking a geocoded city loads the nearest one's real observed profile as the closest
+//     available stand-in, while still using the searched city's own real latitude for solar-angle physics.
 function setupStationSearch()
 {
   const searchInput = document.getElementById('stationSearchInput');
   const dataList = document.getElementById('stationSearchList');
+  const suggestionsEl = document.getElementById('citySearchResults');
 
   if (!searchInput || !dataList || !stationSelector)
     return;
@@ -346,21 +388,165 @@ function setupStationSearch()
     return true;
   }
 
+  function hideSuggestions()
+  {
+    if (suggestionsEl) {
+      suggestionsEl.innerHTML = '';
+      suggestionsEl.hidden = true;
+    }
+  }
+
+  function selectGeocodedCity(result)
+  {
+    hideSuggestions();
+
+    const lat = parseFloat(result.lat);
+    const lon = parseFloat(result.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon))
+      return;
+
+    const address = result.address || {};
+    const cityName = address.city || address.town || address.village || address.municipality || address.county || result.display_name.split(',')[0];
+    const country = address.country || '';
+    const fullLabel = country ? cityName + ', ' + country : cityName;
+
+    const nearest = findNearestStation(lat, lon);
+
+    selectedCityLabel = fullLabel + ' — sondage le plus proche : ' + nearest.key + ' (' + Math.round(nearest.distanceKm) + ' km)';
+    searchInput.value = fullLabel;
+
+    for (const option of stationSelector.options) option.hidden = false; // clear any leftover local-filter narrowing
+
+    stationSelector.value = soundingStations[nearest.key].id;
+    stationSelector.dispatchEvent(new Event('change', {bubbles : true})); // sets startLatitude (to the substitute station's) and calls prepareSounding()
+    startLatitude = lat; // override with the searched city's own real latitude -- more accurate for solar-angle/day-length physics than the substitute station's
+  }
+
+  function renderEmptyMessage(text)
+  {
+    suggestionsEl.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'city-suggestion city-suggestion-empty';
+    empty.textContent = text; // textContent, not innerHTML: this may echo back the user's own typed query
+    suggestionsEl.appendChild(empty);
+    suggestionsEl.hidden = false;
+  }
+
+  function renderSuggestions(results, query)
+  {
+    if (!suggestionsEl)
+      return;
+
+    if (!results || results.length === 0) {
+      renderEmptyMessage('Aucune ville trouvée pour "' + query + '"');
+      return;
+    }
+
+    suggestionsEl.innerHTML = '';
+
+    const seenLabels = new Set(); // Nominatim can return the same place twice (e.g. the city node and its administrative boundary)
+
+    for (const result of results) {
+      const address = result.address || {};
+      const cityName = address.city || address.town || address.village || address.municipality || address.county || result.display_name.split(',')[0];
+      const country = address.country || '';
+      const label = cityName + '|' + country;
+
+      if (seenLabels.has(label))
+        continue;
+      seenLabels.add(label);
+
+      const item = document.createElement('div');
+      item.className = 'city-suggestion';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'city-suggestion-name';
+      nameEl.textContent = cityName; // textContent: city/country names come from an external API response, never trusted as markup
+      item.appendChild(nameEl);
+
+      if (country) {
+        const countryEl = document.createElement('span');
+        countryEl.className = 'city-suggestion-country';
+        countryEl.textContent = country;
+        item.appendChild(countryEl);
+      }
+
+      item.addEventListener('mousedown', function(event) {
+        event.preventDefault(); // keep focus on the input so 'blur' doesn't hide the list before the click registers
+        selectGeocodedCity(result);
+      });
+      suggestionsEl.appendChild(item);
+    }
+
+    if (suggestionsEl.children.length === 0) {
+      renderEmptyMessage('Aucune ville trouvée pour "' + query + '"');
+      return;
+    }
+
+    suggestionsEl.hidden = false;
+  }
+
+  let geocodeAbortController = null;
+  let geocodeDebounceTimer = null;
+
+  async function fetchCitySuggestions(query)
+  {
+    if (geocodeAbortController)
+      geocodeAbortController.abort();
+    geocodeAbortController = new AbortController();
+
+    if (suggestionsEl)
+      renderEmptyMessage('Recherche de "' + query + '"...');
+
+    try {
+      const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=8&q=' + encodeURIComponent(query);
+      const resp = await fetch(url, {signal : geocodeAbortController.signal});
+
+      if (!resp.ok)
+        throw new Error('HTTP ' + resp.status);
+
+      const results = await resp.json();
+      renderSuggestions(results, query);
+    } catch (err) {
+      if (err.name === 'AbortError')
+        return; // superseded by a newer keystroke, not a real failure
+
+      console.error('Erreur recherche de ville (Nominatim):', err);
+      if (suggestionsEl)
+        renderEmptyMessage('Recherche indisponible (hors ligne ?)');
+    }
+  }
+
   searchInput.addEventListener('input', function() {
-    const query = searchInput.value.trim().toLowerCase();
+    const query = searchInput.value.trim();
+    const queryLower = query.toLowerCase();
 
     // Options stay in the DOM (never removed) so index-based lookups elsewhere (stationSelector.onchange
     // uses select.selectedIndex against Object.values(soundingStations)) keep working unchanged.
     for (const option of stationSelector.options) {
       const stationName = option.textContent.toLowerCase();
-      option.hidden = query.length > 0 && !stationName.includes(query);
+      option.hidden = queryLower.length > 0 && !stationName.includes(queryLower);
     }
 
-    if (query.length > 0)
-      selectStationByName(query); // auto-load once the typed text is an exact city match
+    if (queryLower.length > 0)
+      selectStationByName(queryLower); // auto-load once the typed text exactly matches one of the presets
+
+    clearTimeout(geocodeDebounceTimer);
+    if (query.length < 3) {
+      hideSuggestions();
+      return;
+    }
+    geocodeDebounceTimer = setTimeout(() => fetchCitySuggestions(query), 500); // debounced: Nominatim asks not to be hammered on every keystroke
   });
 
   searchInput.addEventListener('change', function() { selectStationByName(searchInput.value.trim()); });
+
+  searchInput.addEventListener('blur', function() { setTimeout(hideSuggestions, 150); }); // slight delay so a suggestion's mousedown still fires first
+
+  searchInput.addEventListener('focus', function() {
+    if (suggestionsEl && suggestionsEl.innerHTML !== '')
+      suggestionsEl.hidden = false;
+  });
 }
 
 
@@ -1771,7 +1957,8 @@ async function prepareSounding()
 
   const stationOption = stationSelector.options[stationSelector.selectedIndex];
   const statusEl = document.getElementById('soundingStatus');
-  const cityName = stationOption.textContent;
+  const cityName = selectedCityLabel || stationOption.textContent;
+  selectedCityLabel = null; // one-shot: consumed here so a later direct station pick shows its own plain name again
 
   if (statusEl) {
     statusEl.textContent = 'Chargement du sondage pour ' + cityName + '...';

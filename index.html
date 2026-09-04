@@ -476,7 +476,9 @@
         }
 
         .station-search-row {
+            position: relative;
             margin-bottom: 0.75rem;
+            max-width: 420px;
         }
 
         .station-search {
@@ -488,6 +490,7 @@
             background: rgba(255, 255, 255, 0.08);
             border: 1px solid rgba(255, 255, 255, 0.25);
             border-radius: var(--border-radius);
+            box-sizing: border-box;
         }
 
         .station-search::placeholder {
@@ -498,6 +501,60 @@
             outline: none;
             border-color: var(--accent-color);
             background: rgba(255, 255, 255, 0.14);
+        }
+
+        .city-suggestions {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            right: 0;
+            z-index: 5;
+            max-height: 280px;
+            overflow-y: auto;
+            background: rgba(20, 30, 45, 0.92);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: var(--border-radius);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+        }
+
+        .city-suggestion {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.6rem 0.9rem;
+            cursor: pointer;
+            font-size: 0.92rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .city-suggestion:last-child {
+            border-bottom: none;
+        }
+
+        .city-suggestion:hover {
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        .city-suggestion-name {
+            color: var(--text-color);
+        }
+
+        .city-suggestion-country {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.82rem;
+            white-space: nowrap;
+        }
+
+        .city-suggestion-empty {
+            cursor: default;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .city-suggestion-empty:hover {
+            background: none;
         }
 
         .sounding-status {
@@ -604,8 +661,9 @@
                 <div style="float: left; margin-right: 100px; max-width: 420px;">
                     <div class="station-search-row">
                         <input type="text" id="stationSearchInput" class="station-search" list="stationSearchList"
-                            placeholder="Rechercher une ville ou une station..." autocomplete="off" />
+                            placeholder="Rechercher n'importe quelle ville dans le monde..." autocomplete="off" />
                         <datalist id="stationSearchList"></datalist>
+                        <div id="citySearchResults" class="city-suggestions" hidden></div>
                     </div>
                     <div>
                         <select id="stationSelect"></select>
