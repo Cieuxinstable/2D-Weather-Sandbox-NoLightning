@@ -125,7 +125,7 @@ async function scrapeTableData(url)
   }
 }
 
-async function loadSounding(stationID, timeStamp)
+async function loadSounding(stationID, timeStamp, isStale = () => false)
 {
 
   const imgMapType = 1; // 0 = large classic emagram   1 = small emagram
@@ -134,8 +134,12 @@ async function loadSounding(stationID, timeStamp)
 
   const SoundingGraphImgUrl = await getSoundingGraphImgUrl(graphPageUrl);
 
+  if (isStale()) // a newer request already superseded this one, or #IntroScreen (and #soundingPreview with it) was already torn down
+    return scrapeTableData(tablePageUrl);
+
   const soundingImgEl = document.getElementById('soundingPreview');
-  soundingImgEl.src = SoundingGraphImgUrl;
+  if (soundingImgEl)
+    soundingImgEl.src = SoundingGraphImgUrl;
 
   // console.log(graphPageUrl, SoundingGraphImgUrl, tablePageUrl);
 
@@ -312,11 +316,59 @@ function createStationSelect()
   return select;
 }
 
+// City search box for the sounding station picker: sits alongside the existing <select id="stationSelect">
+// (never replaces it) and does two things as the user types -- instantly filters that dropdown's options
+// down to matching city names, and auto-selects + loads the sounding as soon as the typed text exactly
+// matches one city (case-insensitive), reusing stationSelector's own onchange (set above) so behavior
+// stays identical to picking that city from the dropdown directly.
+function setupStationSearch()
+{
+  const searchInput = document.getElementById('stationSearchInput');
+  const dataList = document.getElementById('stationSearchList');
+
+  if (!searchInput || !dataList || !stationSelector)
+    return;
+
+  for (const name of Object.keys(soundingStations)) {
+    const option = document.createElement('option');
+    option.value = name;
+    dataList.appendChild(option);
+  }
+
+  function selectStationByName(name)
+  {
+    const key = Object.keys(soundingStations).find(k => k.toLowerCase() === name.toLowerCase());
+    if (!key)
+      return false;
+
+    stationSelector.value = soundingStations[key].id;
+    stationSelector.dispatchEvent(new Event('change', {bubbles : true})); // reuses the existing onchange: sets startLatitude and calls prepareSounding()
+    return true;
+  }
+
+  searchInput.addEventListener('input', function() {
+    const query = searchInput.value.trim().toLowerCase();
+
+    // Options stay in the DOM (never removed) so index-based lookups elsewhere (stationSelector.onchange
+    // uses select.selectedIndex against Object.values(soundingStations)) keep working unchanged.
+    for (const option of stationSelector.options) {
+      const stationName = option.textContent.toLowerCase();
+      option.hidden = query.length > 0 && !stationName.includes(query);
+    }
+
+    if (query.length > 0)
+      selectStationByName(query); // auto-load once the typed text is an exact city match
+  });
+
+  searchInput.addEventListener('change', function() { selectStationByName(searchInput.value.trim()); });
+}
+
 
 // Ensure the DOM is fully loaded before running the function
 document.addEventListener('DOMContentLoaded', () => {
   createPresetSelect();
   stationSelector = createStationSelect();
+  setupStationSearch();
   prepareSounding();
 
   const pendingGridResY = localStorage.getItem('pendingGridResY');
@@ -1702,8 +1754,12 @@ function setLoadingBar()
 
 var soundingData;
 
+var prepareSoundingRequestId = 0; // guards against overlapping calls (e.g. fast typing in the city search box) resolving out of order
+
 async function prepareSounding()
 {
+  const requestId = ++prepareSoundingRequestId;
+
   const dateSel = document.getElementById('datePicker');
   const date = new Date(dateSel.value);
   let epochTime = Math.floor(date.getTime() / 1000);
@@ -1713,7 +1769,40 @@ async function prepareSounding()
 
   epochTime += hour * 3600;
 
-  soundingData = await loadSounding(stationSelector.options[stationSelector.selectedIndex].value, epochTime);
+  const stationOption = stationSelector.options[stationSelector.selectedIndex];
+  const statusEl = document.getElementById('soundingStatus');
+  const cityName = stationOption.textContent;
+
+  if (statusEl) {
+    statusEl.textContent = 'Chargement du sondage pour ' + cityName + '...';
+    statusEl.className = 'sounding-status loading';
+  }
+
+  try {
+    const result = await loadSounding(stationOption.value, epochTime, () => requestId !== prepareSoundingRequestId);
+
+    if (requestId !== prepareSoundingRequestId)
+      return; // a newer call (e.g. the user kept typing) already superseded this one -- drop this stale result
+
+    soundingData = result;
+
+    if (statusEl) {
+      statusEl.textContent = '✓ Sondage chargé — ' + cityName;
+      statusEl.className = 'sounding-status success';
+    }
+  } catch (err) {
+    // A network hiccup or an unavailable date/station combo used to leave this as an unhandled promise
+    // rejection with no feedback at all -- surface it instead of silently leaving soundingData stale.
+    console.error('Erreur chargement du sondage:', err);
+
+    if (requestId !== prepareSoundingRequestId)
+      return;
+
+    if (statusEl) {
+      statusEl.textContent = '⚠ Échec du chargement du sondage, réessayez.';
+      statusEl.className = 'sounding-status error';
+    }
+  }
 }
 
 async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops)
