@@ -680,7 +680,7 @@
             Preset:<select id="presetSelect" style="margin: 10px;"></select>
         </div>
 
-        <div id="stations-section" class="glass-card setup-section" style="overflow: auto;">
+        <div id="stations-section" class="glass-card setup-section notranslate" translate="no" style="overflow: auto;">
             <h3 class="glass-card-title">📡 Station Météo & Émagramme</h3>
             <div style="width: 100%;">
                 <div style="float: left; margin-right: 100px; max-width: 420px;">
@@ -688,7 +688,7 @@
                         <input type="text" id="stationSearchInput" class="station-search" list="stationSearchList"
                             placeholder="Rechercher n'importe quelle ville dans le monde..." autocomplete="off" />
                         <datalist id="stationSearchList"></datalist>
-                        <div id="citySearchResults" class="city-suggestions" hidden></div>
+                        <div id="citySearchResults" class="city-suggestions notranslate" translate="no" hidden></div>
                     </div>
                     <div>
                         <select id="stationSelect"></select>
@@ -702,10 +702,10 @@
                             <option value="18">18H</option>
                         </select>
                         <p>Select a real world sounding to use as forcing in the simulation</p>
-                        <p id="soundingStatus" class="sounding-status"></p>
+                        <p id="soundingStatus" class="sounding-status notranslate" translate="no"></p>
                     </div>
                 </div>
-                <div style="float: left; overflow: hidden;" id="soundingDisplayCol">
+                <div style="float: left; overflow: hidden;" id="soundingDisplayCol" class="notranslate" translate="no">
                     <h4 id="soundingTitle" class="sounding-title"></h4>
                     <img style="height: 480px;" id="soundingPreview"
                         alt="Sounding not available, Please select a different time.">
