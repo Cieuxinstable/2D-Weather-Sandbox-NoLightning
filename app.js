@@ -70,6 +70,28 @@ function mixGeneric(a, b, t, {clamp = false} = {})
 
 const corsUrl = 'https://my-cors-proxy.nielsdaemen747.workers.dev/?url='; // my own proxy worker on cloudfare
 
+// Resolves the actual PNG URL of meteociel's own official émagramme image for a station/date, by
+// scraping the small graph page (map=1) the same way scrapeTableData() scrapes the raw data table
+// (map=4) from the full table page. Returns null (never throws) if unavailable.
+async function getSoundingGraphImgUrl(stationID, timeStamp)
+{
+  try {
+    const imgMapType = 1; // 0 = large classic emagram, 1 = small emagram
+    const graphPageUrl = 'https://www.meteociel.fr/cartes_obs/sondage_display.php?id=' + stationID + '&map=' + imgMapType + '&date=' + timeStamp;
+    const response = await fetch(corsUrl + encodeURIComponent(graphPageUrl));
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const img = doc.querySelectorAll('img')[0];
+    if (!img)
+      return null;
+    return 'https://www.meteociel.fr/' + img.getAttribute('src');
+  } catch (err) {
+    console.error('Image de sondage Meteociel indisponible:', err);
+    return null;
+  }
+}
+
 // Function to scrape table data from the given URL
 async function scrapeTableData(url)
 {
@@ -140,30 +162,11 @@ async function loadSoundingTable(stationID, timeStamp)
   return isPlausibleSoundingTable(table) ? table : null;
 }
 
-// Loads a single preset station's sounding for the setup-screen émagramme (drawn on #soundingCanvas --
-// there is no meteociel image fetch at all anymore, canvas is the only renderer). Never throws: a future
-// date, a 404/offline proxy, or a station with no observation at this date/hour all fall back to
-// generateSyntheticSoundingTable() using the station's own latitude, exactly like loadInterpolatedSounding()
-// does for a searched city, so the graph always has a complete profile to draw. Returns {table, isSynthetic}.
-async function loadStationSounding(stationID, lat, timeStamp)
-{
-  if (timeStamp > Math.floor(Date.now() / 1000)) // no archive has tomorrow's weather -- skip the guaranteed-empty fetch
-    return {table : generateSyntheticSoundingTable(lat, timeStamp), isSynthetic : true};
-
-  try {
-    const table = await loadSoundingTable(stationID, timeStamp);
-    if (table)
-      return {table, isSynthetic : false};
-  } catch (err) {
-    console.error('Sondage station indisponible, bascule sur une estimation synthétique:', err);
-  }
-
-  return {table : generateSyntheticSoundingTable(lat, timeStamp), isSynthetic : true};
-}
-
-// Linearly interpolates a station's raw sounding table to an arbitrary altitude, clamping at the top/
-// bottom of its range. Assumes `table` is sorted the same way scrapeTableData() produces it (descending
-// altitude, matching rawSoundingToSimSounding()'s own assumption below).
+// Linearly interpolates a REAL station's raw sounding table to an arbitrary altitude within it, clamping
+// at the top/bottom of its range. Used by the setup-screen émagramme (calcBulkShearFromTable(), the CAPE/
+// CIN shading in drawSetupEmagram()) to sample a real table at heights that fall between its own levels --
+// this is single-table interpolation, not cross-station blending. Assumes `table` is sorted the same way
+// scrapeTableData() produces it (descending altitude, matching rawSoundingToSimSounding()'s own assumption).
 function interpolateTableAtAltitude(table, targetAlt)
 {
   if (targetAlt >= table[0].alt)
@@ -182,145 +185,48 @@ function interpolateTableAtAltitude(table, targetAlt)
   return table[table.length - 1];
 }
 
-// Blends several nearby real stations' soundings into one synthetic profile for a point that has no
-// station of its own -- inverse-distance-weighted at each altitude level of the closest station's own
-// grid (used as the common reference so the result doesn't depend on an arbitrary separate grid).
-// `entries`: [{table, distanceKm}, ...], already fetched and non-empty.
-function blendSoundingTables(entries)
+function isFutureTimestamp(timeStamp) { return timeStamp > Math.floor(Date.now() / 1000); } // no Meteociel archive has tomorrow's weather
+
+// Loads a single preset station's REAL Meteociel sounding only -- no synthetic/estimated fallback of any
+// kind. Returns null (never throws) for a future date, an unreachable proxy, or a station with no real
+// observation archived at this exact date/hour; the caller (prepareSounding()) shows an explicit
+// "no real data" message rather than fabricating anything.
+async function loadStationSounding(stationID, timeStamp)
 {
-  if (entries.length === 1)
-    return entries[0].table;
-
-  const weighted = entries.map(e => ({table : e.table, weight : 1 / (e.distanceKm + 1)})); // +1 km avoids a divide-by-zero if the point sits exactly on a station
-  const totalWeight = weighted.reduce((sum, w) => sum + w.weight, 0);
-
-  const reference = weighted.reduce((best, w) => (w.weight > best.weight ? w : best));
-
-  return reference.table.map(refRow => {
-    let t = 0, tw = 0, td = 0, rh = 0, p = 0;
-    let velX = 0, velY = 0; // wind blended as a vector (u/v-style), not by naively averaging speed and compass angle separately
-
-    for (const {table, weight} of weighted) {
-      const row = table === reference.table ? refRow : interpolateTableAtAltitude(table, refRow.alt);
-      const w = weight / totalWeight;
-
-      t += row.t * w;
-      tw += row.tw * w;
-      td += row.td * w;
-      rh += row.rh * w;
-      p += row.p * w;
-      velX += row.vel * Math.sin(row.angle * degToRad) * w;
-      velY += row.vel * Math.cos(row.angle * degToRad) * w;
-    }
-
-    const vel = Math.hypot(velX, velY);
-    const angle = (Math.atan2(velX, velY) / degToRad + 360) % 360;
-
-    return {alt : refRow.alt, p, t, tw, td, rh, vel, angle};
-  });
-}
-
-// Standard-atmosphere-style synthetic fallback: builds a physically-plausible (but NOT observational)
-// vertical profile from latitude and time of year alone, for when no real station data can be found
-// anywhere for the requested date/hour (very old/future dates, remote regions, or every nearby station's
-// archive simply missing that observation). This guarantees loadInterpolatedSounding() always returns a
-// usable, complete profile -- prepareSounding() labels it clearly as an estimate rather than a real
-// sondage. Pressure levels and table shape match the real scraped tables so it flows through the exact
-// same downstream code (rawSoundingToSimSounding, CAPE/CIN/STP) unmodified.
-function generateSyntheticSoundingTable(lat, timeStamp)
-{
-  const date = new Date(timeStamp * 1000);
-  const dayOfYear = (date - new Date(Date.UTC(date.getUTCFullYear(), 0, 0))) / 86400000;
-  const season = Math.cos((dayOfYear - 15) / 365 * 2 * Math.PI); // +1 near northern-hemisphere midwinter, -1 near midsummer
-
-  // Warmer near the equator, colder toward the poles; the seasonal swing flips sign with hemisphere, and
-  // fades to ~0 at the equator (no real seasons there).
-  const seasonalSwingC = 14 * -season * Math.sign(lat || 1) * clamp(Math.abs(lat) / 45, 0, 1);
-  // Clamped to a broad-but-sane global range: the raw latitude/season formula alone can run away to
-  // implausible extremes at high latitude in deep winter, which would then compound through the lapse
-  // rate below.
-  const surfaceTempC = clamp(27 - 0.55 * Math.abs(lat) + seasonalSwingC, -45, 42);
-
-  // Real-world tropopause temperature stays in a fairly narrow band (roughly -50 to -70C) almost
-  // everywhere on Earth, regardless of surface conditions -- clamped separately here rather than just
-  // lapsing the (already-clamped) surface estimate all the way up, which could otherwise still compound
-  // into an unrealistically cold upper profile at extreme latitude/season combinations.
-  const tropopauseTempC = clamp(surfaceTempC - 6.5 * 11, -70, -50);
-
-  const pressureLevels = [ 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 400, 500, 700, 850, 925, 1000 ];
-
-  return pressureLevels.map(p => {
-    // ICAO troposphere barometric formula, applied across the whole range as a rough estimate -- this is
-    // an explicitly-approximate fallback, not a multi-layer physical atmosphere model.
-    const alt = 44330 * (1 - Math.pow(p / 1013.25, 1 / 5.255));
-    const altKm = alt / 1000;
-
-    let t;
-    if (altKm <= 11)
-      t = surfaceTempC + (tropopauseTempC - surfaceTempC) * (altKm / 11); // lapses smoothly toward the (clamped) tropopause value, rather than a fixed 6.5C/km that could overshoot it
-    else if (altKm <= 20)
-      t = tropopauseTempC; // isothermal tropopause / lower-stratosphere band
-    else
-      t = tropopauseTempC + 1.0 * (altKm - 20); // slight stratospheric warming
-
-    const dewDepression = 5 + altKm * 3; // drier aloft
-    const td = t - dewDepression;
-    const rh = clamp(70 - altKm * 4, 2, 90);
-
-    const vel = 5 + 45 * Math.sin(clamp(altKm / 12, 0, 1) * Math.PI); // crude jet-stream-shaped profile, no real directional data to draw from
-    const angle = 270; // generic westerly flow
-
-    return {alt, p, t, tw : (t + td) / 2, td, rh, vel, angle};
-  });
-}
-
-// Fetches and blends the sounding for an arbitrary lat/lon that isn't itself a real station (see
-// findNearestStations()/blendSoundingTables()). Widens the search if the closest few stations have no
-// data for this date/hour, and falls back to a synthetic estimate (generateSyntheticSoundingTable()) if
-// truly nothing real is available anywhere -- a future date, an offline/unreachable proxy, or every
-// nearby station simply missing that observation. This NEVER throws/fails, so the émagramme always has a
-// complete profile to render. Returns {table, isSynthetic}, or null if superseded by a newer request.
-async function loadInterpolatedSounding(lat, lon, timeStamp, isStale = () => false)
-{
-  if (timeStamp > Math.floor(Date.now() / 1000)) // no archive on Earth has tomorrow's weather -- skip the guaranteed-empty fetches entirely
-    return {table : generateSyntheticSoundingTable(lat, timeStamp), isSynthetic : true};
+  if (isFutureTimestamp(timeStamp))
+    return null;
 
   try {
-    const CLOSE_STATIONS = 3;
+    return await loadSoundingTable(stationID, timeStamp);
+  } catch (err) {
+    console.error('Sondage Meteociel indisponible:', err);
+    return null;
+  }
+}
 
-    let nearest = findNearestStations(lat, lon, CLOSE_STATIONS);
-    let tables = await Promise.all(nearest.map(n => loadSoundingTable(soundingStations[n.key].id, timeStamp)));
+// For a searched city with no station of its own: tries every known station in order of distance and
+// returns the first one that actually has a REAL archived observation for this exact date/hour -- never
+// blends or estimates, strictly "closest station that really has the data". Sequential (not parallel) so
+// a nearby match stops the search immediately instead of hammering every station on the shared proxy.
+// Returns {table, stationKey, distanceKm}, or null if truly no station anywhere has real data (or the
+// date is in the future).
+async function findRealSoundingForCity(lat, lon, timeStamp, isStale = () => false)
+{
+  if (isFutureTimestamp(timeStamp))
+    return null;
 
+  const nearest = findNearestStations(lat, lon, Object.keys(soundingStations).length); // every station, closest first
+
+  for (const n of nearest) {
     if (isStale())
       return null;
 
-    let entries = nearest.map((n, i) => ({table : tables[i], distanceKm : n.distanceKm})).filter(e => e.table && e.table.length > 0);
-
-    if (entries.length === 0) {
-      // None of the closest few had data for this date/hour -- widen to every known station before giving
-      // up on real data entirely.
-      nearest = findNearestStations(lat, lon, Object.keys(soundingStations).length);
-      tables = await Promise.all(nearest.map(n => loadSoundingTable(soundingStations[n.key].id, timeStamp)));
-
-      if (isStale())
-        return null;
-
-      entries = nearest.map((n, i) => ({table : tables[i], distanceKm : n.distanceKm})).filter(e => e.table && e.table.length > 0);
-    }
-
-    if (entries.length === 0)
-      return {table : generateSyntheticSoundingTable(lat, timeStamp), isSynthetic : true};
-
-    // Cap how many (and how far) contributing stations get blended in, even after widening the search --
-    // otherwise a station on the other side of the continent could end up diluting the result.
-    const usable = entries.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, CLOSE_STATIONS);
-
-    return {table : blendSoundingTables(usable), isSynthetic : false};
-  } catch (err) {
-    // Network down, proxy unreachable, whatever -- still never leaves the caller with nothing to render.
-    console.error('Sondage interpolé indisponible, bascule sur une estimation synthétique:', err);
-    return {table : generateSyntheticSoundingTable(lat, timeStamp), isSynthetic : true};
+    const table = await loadStationSounding(soundingStations[n.key].id, timeStamp);
+    if (table)
+      return {table, stationKey : n.key, distanceKm : n.distanceKm};
   }
+
+  return null;
 }
 
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
@@ -481,11 +387,9 @@ function haversineDistanceKm(lat1, lon1, lat2, lon2)
 }
 
 // Real radiosonde soundings only exist at a sparse set of fixed launch sites worldwide (soundingStations
-// above), so an arbitrary searched city can't have its own directly-observed profile. Rather than just
-// substituting the single nearest station's data wholesale (which would misrepresent a possibly-distant
-// city as if it were that station), this returns the `count` closest ones sorted by distance, so their
-// profiles can be inverse-distance-weighted together into an interpolated estimate for the exact point
-// (see blendSoundingTables()).
+// above), so an arbitrary searched city can't have its own directly-observed profile. Returns the `count`
+// closest ones sorted by distance, so the caller (findRealSoundingForCity()) can try them in order and
+// use the first one that actually has a real archived observation for the requested date/hour.
 function findNearestStations(lat, lon, count)
 {
   return Object.entries(soundingStations)
@@ -522,10 +426,11 @@ function createStationSelect()
 }
 
 // Set by the global city search (see selectGeocodedCity() below): while non-null, prepareSounding()
-// generates an interpolated profile for this exact lat/lon (see loadInterpolatedSounding()) instead of
-// loading a single preset station's data. Persists across date/hour changes -- it's cleared only when the
-// user picks a preset station directly (createStationSelect()'s onchange), so re-running prepareSounding()
-// for a new date on the same searched city still targets that same exact point.
+// looks up the closest REAL station that actually has archived data for this exact lat/lon (see
+// findRealSoundingForCity()) instead of loading the preset <select>'s own station. Persists across
+// date/hour changes -- it's cleared only when the user picks a preset station directly
+// (createStationSelect()'s onchange), so re-running prepareSounding() for a new date on the same searched
+// city still targets that same exact point.
 var geocodedCity = null; // {lat, lon, label}
 
 // City search for the sounding station picker: sits alongside the existing <select id="stationSelect">
@@ -533,9 +438,8 @@ var geocodedCity = null; // {lat, lon, label}
 //  1) an instant, local, offline filter of that dropdown's own preset stations, with auto-load as soon
 //     as the typed text exactly matches one of their names (case-insensitive);
 //  2) a debounced global geocoding lookup (OpenStreetMap Nominatim) so ANY real city/commune can be
-//     searched, not just the ~50 preset radiosonde launch sites -- picking one of those results generates
-//     an interpolated profile for that exact point (see loadInterpolatedSounding()), rather than
-//     substituting a single nearby station's data wholesale.
+//     searched, not just the ~50 preset radiosonde launch sites -- picking one of those results loads the
+//     nearest real station's actual archived data (see findRealSoundingForCity()), never a fabricated one.
 function setupStationSearch()
 {
   const searchInput = document.getElementById('stationSearchInput');
@@ -2111,14 +2015,14 @@ function setLoadingBar()
   });
 }
 
-// ===================== Setup-screen émagramme (custom/interpolated points) =====================
+// ===================== Setup-screen émagramme =====================
 //
-// meteociel only has a real graph image for its own fixed stations, so a searched city with no station
-// of its own (see loadInterpolatedSounding()) has nothing to fetch an image for. Rather than showing a
-// broken <img>, this draws the same kind of skew-T-style chart directly from the raw sounding table on
-// #soundingCanvas: temperature/dewpoint curves, the lifted parcel path with CAPE/CIN shading, wind barbs,
-// a small hodograph, and the CAPE/CIN/LCL/shear/STP readout. Runs at setup time, before mainScript() /
-// guiControls exist, so it uses guiControls_default's physics constants directly instead.
+// Alongside the official Meteociel graph image (#soundingPreview, fetched separately -- see
+// getSoundingGraphImgUrl() and prepareSounding()), this draws a supplementary skew-T-style chart directly
+// from the same REAL raw sounding table on #soundingCanvas: temperature/dewpoint curves, the lifted
+// parcel path with CAPE/CIN shading, wind barbs, a small hodograph, and the CAPE/CIN/LCL/shear/STP
+// readout. Always built from real archived data, never anything fabricated. Runs at setup time, before
+// mainScript()/guiControls exist, so it uses guiControls_default's physics constants directly instead.
 
 // Lifts a surface parcel through the RAW sounding table (real altitudes, not sim grid cells), using the
 // exact same dry/moist adiabat model as the in-game sounding graph (calcParcelIndices further up), and
@@ -2267,11 +2171,11 @@ function drawWindBarb(ctx, x, y, speedKmh, angleDeg, color)
   }
 }
 
-// Draws the full setup-screen émagramme for a custom/interpolated point onto #soundingCanvas: skew
+// Draws the setup-screen technical émagramme onto #soundingCanvas from a REAL sounding table: skew
 // isotherms, altitude gridlines, environment T/Td curves, the lifted parcel path with CAPE (red) / CIN
 // (blue) shading between it and the environment, wind barbs, a small hodograph inset, and the numeric
-// CAPE/CIN/LCL/shear/STP readout. `table`: same shape loadInterpolatedSounding() returns.
-function drawSetupEmagram(table, meta)
+// CAPE/CIN/LCL/shear/STP readout. Shown alongside the official Meteociel image, not instead of it.
+function drawSetupEmagram(table)
 {
   const canvas = document.getElementById('soundingCanvas');
   if (!canvas || !table || table.length < 2)
@@ -2444,17 +2348,31 @@ function drawSetupEmagram(table, meta)
   ctx.fillText('Shear 0-6km: ' + printVelocity(indices.shear06), 10, 80);
   ctx.fillStyle = indices.STP >= 1.0 ? '#FF4444' : 'yellow';
   ctx.fillText('STP: ' + indices.STP.toFixed(2), 10, 100);
-
-  if (meta && meta.isSynthetic) {
-    ctx.fillStyle = '#f0c05a';
-    ctx.font = '13px Arial';
-    ctx.fillText('≈ estimation synthétique (aucune donnée réelle disponible)', 10, height - 8);
-  }
 }
 
 var soundingData;
 
 var prepareSoundingRequestId = 0; // guards against overlapping calls (e.g. fast typing in the city search box) resolving out of order
+
+// Fetches meteociel's own official graph image for a real station/date and shows it in #soundingPreview,
+// once we already know that station has real data for this date/hour (from loadStationSounding()/
+// findRealSoundingForCity() succeeding). Never blocks the table/canvas rendering above it in
+// prepareSounding() -- this is a best-effort visual bonus, guarded by the same request id so a slow,
+// now-stale image fetch can't clobber a newer selection.
+async function loadAndShowRealImage(stationID, timeStamp, requestId)
+{
+  const imgEl = document.getElementById('soundingPreview');
+  if (!imgEl)
+    return;
+
+  const url = await getSoundingGraphImgUrl(stationID, timeStamp);
+
+  if (requestId !== prepareSoundingRequestId || !url)
+    return;
+
+  imgEl.src = url;
+  imgEl.hidden = false;
+}
 
 async function prepareSounding()
 {
@@ -2471,38 +2389,83 @@ async function prepareSounding()
 
   const statusEl = document.getElementById('soundingStatus');
   const titleEl = document.getElementById('soundingTitle');
+  const imgEl = document.getElementById('soundingPreview');
 
-  // #soundingCanvas is the only visual renderer for the émagramme now (see drawSetupEmagram()) -- there
-  // is no meteociel <img> anymore for either path, so nothing here ever depends on a remote image fetch
-  // succeeding. Both loadInterpolatedSounding() (searched city) and loadStationSounding() (preset station)
-  // are built to never throw: a future date, a 404/unreachable proxy, or simply no observation at this
-  // date/hour all silently fall back to generateSyntheticSoundingTable(), so this never shows a blocking
-  // "échec" state -- the worst case is a clearly-labeled estimate instead of real data.
   const cityName = geocodedCity ? geocodedCity.label : stationSelector.options[stationSelector.selectedIndex].textContent;
-  const label = geocodedCity ? '📍 ' + cityName : cityName;
 
   if (titleEl)
-    titleEl.textContent = label;
+    titleEl.textContent = geocodedCity ? '📍 ' + cityName : cityName;
+
+  if (imgEl)
+    imgEl.hidden = true; // hidden until a real image URL actually resolves below -- never shows a broken icon
+
+  const NO_DATA_MESSAGE = 'Pas de sondage réel Meteociel disponible pour cette date/lieu. Veuillez choisir une date passée.';
+
+  function showNoRealData()
+  {
+    if (statusEl) {
+      statusEl.textContent = NO_DATA_MESSAGE;
+      statusEl.className = 'sounding-status error';
+    }
+    const canvas = document.getElementById('soundingCanvas');
+    if (canvas)
+      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); // no fabricated graph left on screen
+  }
+
+  if (isFutureTimestamp(epochTime)) { // no Meteociel archive can have a date that hasn't happened yet -- don't even try fetching
+    showNoRealData();
+    return;
+  }
 
   if (statusEl) {
-    statusEl.textContent = (geocodedCity ? 'Génération du profil pour ' : 'Chargement du sondage pour ') + cityName + '...';
+    statusEl.textContent = (geocodedCity ? 'Recherche du sondage réel Meteociel le plus proche pour ' : 'Chargement du sondage Meteociel pour ') + cityName + '...';
     statusEl.className = 'sounding-status loading';
   }
 
-  const result = geocodedCity ? await loadInterpolatedSounding(geocodedCity.lat, geocodedCity.lon, epochTime, () => requestId !== prepareSoundingRequestId)
-                               : await loadStationSounding(stationSelector.value, startLatitude, epochTime);
+  if (geocodedCity) {
+    const found = await findRealSoundingForCity(geocodedCity.lat, geocodedCity.lon, epochTime, () => requestId !== prepareSoundingRequestId);
+
+    if (requestId !== prepareSoundingRequestId)
+      return; // a newer call already superseded this one
+
+    if (!found) {
+      showNoRealData();
+      return;
+    }
+
+    soundingData = found.table;
+    drawSetupEmagram(found.table);
+
+    if (titleEl)
+      titleEl.textContent = '📍 ' + cityName + ' → ' + found.stationKey + ' (' + Math.round(found.distanceKm) + ' km)';
+    if (statusEl) {
+      statusEl.textContent = '✓ Sondage réel Meteociel chargé — station ' + found.stationKey + ' (' + Math.round(found.distanceKm) + ' km)';
+      statusEl.className = 'sounding-status success';
+    }
+
+    await loadAndShowRealImage(soundingStations[found.stationKey].id, epochTime, requestId);
+    return;
+  }
+
+  const table = await loadStationSounding(stationSelector.value, epochTime);
 
   if (requestId !== prepareSoundingRequestId)
-    return; // a newer call (e.g. the user kept typing, or picked a different station) already superseded this one
+    return; // a newer call (e.g. the user picked a different station/date) already superseded this one
 
-  soundingData = result.table;
-  drawSetupEmagram(result.table, {isSynthetic : result.isSynthetic});
+  if (!table) {
+    showNoRealData();
+    return;
+  }
+
+  soundingData = table;
+  drawSetupEmagram(table);
 
   if (statusEl) {
-    statusEl.textContent = result.isSynthetic ? '≈ Profil estimé (aucune donnée réelle disponible) — ' + cityName
-                                               : (geocodedCity ? '✓ Profil interpolé généré — ' : '✓ Sondage chargé — ') + cityName;
-    statusEl.className = result.isSynthetic ? 'sounding-status estimated' : 'sounding-status success';
+    statusEl.textContent = '✓ Sondage réel Meteociel chargé — ' + cityName;
+    statusEl.className = 'sounding-status success';
   }
+
+  await loadAndShowRealImage(stationSelector.value, epochTime, requestId);
 }
 
 async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops)

@@ -592,10 +592,6 @@
             color: #6bdc7c;
         }
 
-        .sounding-status.estimated {
-            color: #f0c05a;
-        }
-
         .sounding-status.error {
             color: #ff6b6b;
         }
@@ -707,6 +703,8 @@
                 </div>
                 <div style="float: left; overflow: hidden;" id="soundingDisplayCol" class="notranslate" translate="no">
                     <h4 id="soundingTitle" class="sounding-title"></h4>
+                    <img style="height: 480px;" id="soundingPreview" hidden
+                        alt="Émagramme officiel Meteociel">
                     <canvas id="soundingCanvas" width="620" height="480" class="sounding-canvas"></canvas>
                 </div>
             </div>
